@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Agent } from "../App";
 import {
   Terminal,
@@ -15,6 +15,10 @@ import {
   Database,
   Clock,
   AlertCircle,
+  Mic,
+  Paperclip,
+  Image as ImageIcon,
+  X,
 } from "lucide-react";
 
 interface WorkspacePanelProps {
@@ -27,6 +31,9 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
   const [terminalHistory, setTerminalHistory] = useState<string[]>([
     "$ Connection established",
   ]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const formatNumber = (num: number) => {
     if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
@@ -35,15 +42,49 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
   };
 
   const handleSendCommand = () => {
-    if (!command.trim()) return;
+    if (!command.trim() && attachedFiles.length === 0) return;
+
+    const fileInfo = attachedFiles.length > 0
+      ? ` [${attachedFiles.length} file(s) attached]`
+      : '';
 
     setTerminalHistory([
       ...terminalHistory,
-      `$ ${command}`,
+      `$ ${command}${fileInfo}`,
       `> Command sent to ${agent.name}`,
     ]);
-    console.log(`Sending command to ${agent.id}: ${command}`);
+    console.log(`Sending command to ${agent.id}: ${command}`, attachedFiles);
     setCommand("");
+    setAttachedFiles([]);
+  };
+
+  const handleVoiceInput = () => {
+    setIsRecording(!isRecording);
+
+    if (!isRecording) {
+      // Start recording
+      console.log("Starting voice recording...");
+      // TODO: Implement actual voice recording
+      // navigator.mediaDevices.getUserMedia({ audio: true })
+
+      // Simulate voice input after 2 seconds
+      setTimeout(() => {
+        setCommand("Voice command recorded");
+        setIsRecording(false);
+      }, 2000);
+    } else {
+      // Stop recording
+      console.log("Stopping voice recording...");
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    setAttachedFiles([...attachedFiles, ...files]);
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setAttachedFiles(attachedFiles.filter((_, i) => i !== index));
   };
 
   const getStatusColor = (status: Agent["status"]) => {
@@ -198,24 +239,95 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
 
           {/* Command Input */}
           <div className="border-t border-border bg-card p-3">
+            {/* Attached Files Preview */}
+            {attachedFiles.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachedFiles.map((file, index) => (
+                  <div
+                    key={index}
+                    className="flex items-center gap-2 px-2 py-1 bg-secondary rounded-md border border-border"
+                  >
+                    {file.type.startsWith('image/') ? (
+                      <ImageIcon className="w-3 h-3 text-muted-foreground" />
+                    ) : (
+                      <Paperclip className="w-3 h-3 text-muted-foreground" />
+                    )}
+                    <span className="text-xs text-card-foreground truncate max-w-[120px]">
+                      {file.name}
+                    </span>
+                    <button
+                      onClick={() => handleRemoveFile(index)}
+                      className="p-0.5 hover:bg-accent rounded transition-colors"
+                    >
+                      <X className="w-3 h-3 text-muted-foreground" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Input Row */}
             <div className="flex gap-2">
+              {/* File Upload */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/*,.pdf,.txt,.json,.log"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2 bg-secondary hover:bg-accent rounded-md transition-colors border border-border text-muted-foreground"
+                title="Attach file"
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
+
+              {/* Voice Input */}
+              <button
+                onClick={handleVoiceInput}
+                className={`p-2 rounded-md transition-all border ${
+                  isRecording
+                    ? "bg-status-error text-white border-status-error animate-pulse"
+                    : "bg-secondary hover:bg-accent border-border text-muted-foreground"
+                }`}
+                title={isRecording ? "Stop recording" : "Voice input"}
+              >
+                <Mic className="w-4 h-4" />
+              </button>
+
+              {/* Text Input */}
               <input
                 type="text"
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
                 onKeyPress={(e) => {
-                  if (e.key === "Enter") handleSendCommand();
+                  if (e.key === "Enter" && !e.shiftKey) handleSendCommand();
                 }}
-                placeholder="Enter command..."
-                className="flex-1 px-3 py-2 bg-input-background text-foreground rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
+                placeholder={isRecording ? "Recording..." : "Enter command or use voice..."}
+                disabled={isRecording}
+                className="flex-1 px-3 py-2 bg-input-background text-foreground rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm disabled:opacity-50"
               />
+
+              {/* Send Button */}
               <button
                 onClick={handleSendCommand}
-                disabled={!command.trim()}
+                disabled={!command.trim() && attachedFiles.length === 0}
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Send className="w-4 h-4" />
               </button>
+            </div>
+
+            {/* Helper Text */}
+            <div className="mt-2 text-xs text-muted-foreground">
+              {isRecording ? (
+                <span className="text-status-error">Recording... Click mic to stop</span>
+              ) : (
+                <span>Press Enter to send, Shift+Enter for new line</span>
+              )}
             </div>
           </div>
         </div>
