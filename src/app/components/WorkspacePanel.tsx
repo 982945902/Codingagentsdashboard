@@ -194,12 +194,12 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
 
             <div className="flex-1 bg-[#0d1117] text-[#3fb950] p-4 overflow-y-auto font-mono">
               {agent.logs.map((log, idx) => (
-                <div key={idx} className="mb-1">
+                <div key={idx} className="mb-1 text-[#3fb9a5]">
                   {log}
                 </div>
               ))}
               {terminalHistory.map((line, idx) => (
-                <div key={`history-${idx}`} className="mb-1">
+                <div key={`history-${idx}`} className="mb-1 text-[#3fb998]">
                   {line}
                 </div>
               ))}

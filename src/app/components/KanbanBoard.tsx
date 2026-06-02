@@ -125,7 +125,7 @@ export function KanbanBoard({ tasks, agents, globalStats, onSelectAgent }: Kanba
                   </div>
                 </div>
 
-                <div className={`px-3 py-1 rounded-md ${getStatusBgColor(agent.status)} border border-[#30363d]`}>
+                <div className={`px-3 py-1 rounded-md ${getStatusBgColor(agent.status)} border border-[#30363d] text-[#0a0a0a]`}>
                   <span className="text-xs capitalize text-[#c9d1d9]">{agent.status}</span>
                 </div>
               </div>
