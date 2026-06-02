@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { WorkspacePanel } from "./components/WorkspacePanel";
 import { ServerSettings } from "./components/ServerSettings";
@@ -45,6 +45,11 @@ export interface Task {
 export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
+
+  // Enable dark mode by default
+  useEffect(() => {
+    document.documentElement.classList.add('dark');
+  }, []);
 
   const [agents] = useState<Agent[]>([
     {
@@ -212,33 +217,33 @@ export default function App() {
   };
 
   return (
-    <div className="size-full bg-[#0d1117] flex flex-col overflow-hidden">
+    <div className="size-full bg-background flex flex-col overflow-hidden">
       {/* Top Navigation Bar */}
-      <div className="h-14 border-b border-[#30363d] bg-[#161b22] flex items-center justify-between px-5">
-        <div className="flex items-center gap-3">
+      <div className="h-12 lg:h-14 border-b border-border bg-card flex items-center justify-between px-3 lg:px-5">
+        <div className="flex items-center gap-2 lg:gap-3">
           {selectedAgent ? (
             <>
               <button
                 onClick={() => setSelectedAgent(null)}
-                className="p-1.5 rounded-lg bg-[#21262d] hover:bg-[#30363d] transition-colors"
+                className="p-1.5 rounded-lg bg-secondary hover:bg-accent transition-colors"
               >
-                <LayoutGrid className="w-4 h-4 text-[#58a6ff]" />
+                <LayoutGrid className="w-4 h-4 text-primary" />
               </button>
               <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full ${
-                  selectedAgent.status === "running" ? "bg-[#3fb950]" :
-                  selectedAgent.status === "error" ? "bg-[#f85149]" :
-                  selectedAgent.status === "idle" ? "bg-[#d29922]" : "bg-[#6e7681]"
+                  selectedAgent.status === "running" ? "bg-status-running" :
+                  selectedAgent.status === "error" ? "bg-status-error" :
+                  selectedAgent.status === "idle" ? "bg-status-idle" : "bg-status-stopped"
                 }`} />
-                <span className="text-[#c9d1d9]">{selectedAgent.name}</span>
+                <span className="text-card-foreground text-sm lg:text-base">{selectedAgent.name}</span>
               </div>
             </>
           ) : (
             <>
-              <div className="p-1.5 rounded-lg bg-[#21262d]">
-                <Activity className="w-4 h-4 text-[#58a6ff]" />
+              <div className="p-1.5 rounded-lg bg-secondary">
+                <Activity className="w-4 h-4 text-primary" />
               </div>
-              <span className="text-[#c9d1d9]">Coding Agents</span>
+              <span className="text-card-foreground text-sm lg:text-base">Coding Agents</span>
             </>
           )}
         </div>
@@ -246,7 +251,7 @@ export default function App() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowSettings(!showSettings)}
-            className="p-2 rounded-lg bg-[#21262d] border border-[#30363d] hover:bg-[#30363d] transition-colors text-[#8b949e]"
+            className="p-2 rounded-lg bg-secondary border border-border hover:bg-accent transition-colors text-muted-foreground"
           >
             <Settings className="w-4 h-4" />
           </button>

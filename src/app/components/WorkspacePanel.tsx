@@ -49,13 +49,13 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
   const getStatusColor = (status: Agent["status"]) => {
     switch (status) {
       case "running":
-        return "bg-[#3fb950]";
+        return "bg-status-running";
       case "error":
-        return "bg-[#f85149]";
+        return "bg-status-error";
       case "idle":
-        return "bg-[#d29922]";
+        return "bg-status-idle";
       default:
-        return "bg-[#6e7681]";
+        return "bg-status-stopped";
     }
   };
 
@@ -70,276 +70,266 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
   const totalCacheTokens = agent.tokenUsage.cacheRead + agent.tokenUsage.cacheCreation;
 
   return (
-    <div className="size-full flex bg-[#0d1117] overflow-hidden">
+    <div className="size-full flex flex-col lg:flex-row bg-background overflow-hidden">
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Agent Header */}
-        <div className="border-b border-[#30363d] bg-[#161b22] p-4">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
+        <div className="border-b border-border bg-card p-3 lg:p-4">
+          <div className="flex items-center justify-between mb-3 lg:mb-4">
+            <div className="flex items-center gap-2 lg:gap-3">
               <div className={`w-3 h-3 rounded-full ${getStatusColor(agent.status)}`} />
-              <span className="text-[#c9d1d9]">{agent.name}</span>
+              <span className="text-card-foreground text-sm lg:text-base">{agent.name}</span>
               {agent.branch && (
                 <>
-                  <div className="w-px h-4 bg-[#30363d]" />
-                  <div className="flex items-center gap-1.5 text-[#8b949e]">
+                  <div className="w-px h-4 bg-border hidden lg:block" />
+                  <div className="flex items-center gap-1.5 text-muted-foreground hidden lg:flex">
                     <GitBranch className="w-3.5 h-3.5" />
-                    <span>{agent.branch}</span>
+                    <span className="text-sm">{agent.branch}</span>
                   </div>
                 </>
               )}
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-[#8b949e]">{agent.model}</span>
+              <span className="text-muted-foreground text-xs lg:text-sm">{agent.model}</span>
             </div>
           </div>
 
           {/* Quick Actions */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 overflow-x-auto">
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
                 <button
                   key={action.cmd}
                   onClick={() => setCommand(action.cmd)}
-                  className="flex items-center gap-2 px-3 py-1.5 bg-[#21262d] hover:bg-[#30363d] rounded-md transition-colors text-[#c9d1d9] border border-[#30363d]"
+                  className="flex items-center gap-2 px-2 lg:px-3 py-1.5 bg-secondary hover:bg-accent rounded-md transition-colors text-secondary-foreground border border-border whitespace-nowrap"
                 >
                   <Icon className="w-4 h-4" />
-                  <span>{action.label}</span>
+                  <span className="text-sm">{action.label}</span>
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* Model Metrics */}
-        <div className="border-b border-[#30363d] bg-[#0d1117] p-4">
-          <h3 className="text-[#c9d1d9] mb-3">Model Metrics</h3>
-          <div className="grid grid-cols-4 gap-3">
-            <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3">
-              <div className="flex items-center gap-2 text-[#8b949e] mb-2">
-                <Activity className="w-4 h-4" />
-                <span>Total Tokens</span>
-              </div>
-              <div className="text-xl text-[#c9d1d9] mb-1">{formatNumber(totalTokens)}</div>
-              <div className="text-xs text-[#8b949e]">
-                In: {formatNumber(agent.tokenUsage.input)} / Out: {formatNumber(agent.tokenUsage.output)}
-              </div>
+        {/* Model Metrics - Compact version */}
+        <div className="border-b border-border bg-background px-3 py-2 lg:px-4 lg:py-2">
+          {/* Mobile: 2 rows, Desktop: 1 row */}
+          <div className="flex flex-wrap lg:flex-nowrap items-center gap-x-3 gap-y-1.5 lg:gap-4">
+            {/* Tokens */}
+            <div className="flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Tokens:</span>
+              <span className="text-sm text-card-foreground">{formatNumber(totalTokens)}</span>
             </div>
 
-            <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3">
-              <div className="flex items-center gap-2 text-[#8b949e] mb-2">
-                <Zap className="w-4 h-4" />
-                <span>Cache</span>
-              </div>
-              <div className="text-xl text-[#3fb950] mb-1">{agent.cacheHitRate}%</div>
-              <div className="text-xs text-[#8b949e]">
-                {formatNumber(totalCacheTokens)} tokens
-              </div>
+            <div className="hidden lg:block w-px h-4 bg-border" />
+
+            {/* Cache */}
+            <div className="flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Cache:</span>
+              <span className="text-sm text-success">{agent.cacheHitRate}%</span>
             </div>
 
-            <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3">
-              <div className="flex items-center gap-2 text-[#8b949e] mb-2">
-                <DollarSign className="w-4 h-4" />
-                <span>Cost</span>
-              </div>
-              <div className="text-xl text-[#c9d1d9] mb-1">${agent.costUSD.toFixed(2)}</div>
-              <div className="text-xs text-[#8b949e]">
-                ${(agent.costUSD / agent.apiCalls.total).toFixed(4)}/call
-              </div>
+            <div className="hidden lg:block w-px h-4 bg-border" />
+
+            {/* Cost */}
+            <div className="flex items-center gap-1.5">
+              <DollarSign className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Cost:</span>
+              <span className="text-sm text-card-foreground">${agent.costUSD.toFixed(2)}</span>
             </div>
 
-            <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3">
-              <div className="flex items-center gap-2 text-[#8b949e] mb-2">
-                <TrendingUp className="w-4 h-4" />
-                <span>API Calls</span>
-              </div>
-              <div className="text-xl text-[#c9d1d9] mb-1">{agent.apiCalls.total}</div>
-              <div className="text-xs text-[#3fb950]">
-                {((agent.apiCalls.success / agent.apiCalls.total) * 100).toFixed(1)}% success
-              </div>
-            </div>
-          </div>
+            <div className="hidden lg:block w-px h-4 bg-border" />
 
-          {/* Context Usage Bar */}
-          <div className="mt-3">
-            <div className="flex items-center justify-between mb-1.5 text-[#8b949e]">
-              <span>Context Window Usage</span>
-              <span>{agent.contextUsage}%</span>
+            {/* API */}
+            <div className="flex items-center gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">API:</span>
+              <span className="text-sm text-card-foreground">{agent.apiCalls.total}</span>
+              <span className="text-xs text-success">
+                ({((agent.apiCalls.success / agent.apiCalls.total) * 100).toFixed(0)}%)
+              </span>
             </div>
-            <div className="w-full bg-[#21262d] rounded-full h-2">
-              <div
-                className={`h-2 rounded-full transition-all ${
-                  agent.contextUsage >= 95
-                    ? "bg-[#f85149]"
-                    : agent.contextUsage >= 80
-                    ? "bg-[#d29922]"
-                    : "bg-[#58a6ff]"
-                }`}
-                style={{ width: `${agent.contextUsage}%` }}
-              />
+
+            <div className="hidden lg:block w-px h-4 bg-border" />
+
+            {/* Context */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">Context:</span>
+              <span className="text-sm text-card-foreground">{agent.contextUsage}%</span>
+              <div className="w-12 lg:w-16 bg-secondary rounded-full h-1.5">
+                <div
+                  className={`h-1.5 rounded-full transition-all ${
+                    agent.contextUsage >= 95
+                      ? "bg-status-error"
+                      : agent.contextUsage >= 80
+                      ? "bg-status-idle"
+                      : "bg-primary"
+                  }`}
+                  style={{ width: `${agent.contextUsage}%` }}
+                />
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Split Panes */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Left: Terminal/Logs */}
-          <div className="flex-1 flex flex-col border-r border-[#30363d]">
-            <div className="h-10 border-b border-[#30363d] bg-[#161b22] flex items-center px-3 gap-2 text-[#8b949e]">
-              <Terminal className="w-4 h-4" />
-              <span>Terminal</span>
-            </div>
+        {/* Terminal - Takes most space on mobile */}
+        <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+          <div className="h-10 border-b border-border bg-card flex items-center px-3 gap-2 text-muted-foreground">
+            <Terminal className="w-4 h-4" />
+            <span className="text-sm">Terminal</span>
+          </div>
 
-            <div className="flex-1 bg-[#0d1117] text-[#3fb950] p-4 overflow-y-auto font-mono">
-              {agent.logs.map((log, idx) => (
-                <div key={idx} className="mb-1 text-[#3fb9a5]">
-                  {log}
-                </div>
-              ))}
-              {terminalHistory.map((line, idx) => (
-                <div key={`history-${idx}`} className="mb-1 text-[#3fb998]">
-                  {line}
-                </div>
-              ))}
-            </div>
+          <div className="flex-1 bg-background text-success p-3 lg:p-4 overflow-y-auto font-mono text-sm">
+            {agent.logs.map((log, idx) => (
+              <div key={idx} className="mb-1">
+                {log}
+              </div>
+            ))}
+            {terminalHistory.map((line, idx) => (
+              <div key={`history-${idx}`} className="mb-1">
+                {line}
+              </div>
+            ))}
+          </div>
 
-            {/* Command Input */}
-            <div className="border-t border-[#30363d] bg-[#161b22] p-3">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={command}
-                  onChange={(e) => setCommand(e.target.value)}
-                  onKeyPress={(e) => {
-                    if (e.key === "Enter") handleSendCommand();
-                  }}
-                  placeholder="Enter command..."
-                  className="flex-1 px-3 py-2 bg-[#0d1117] text-[#c9d1d9] rounded-md border border-[#30363d] focus:outline-none focus:border-[#1f6feb] font-mono"
-                />
-                <button
-                  onClick={handleSendCommand}
-                  disabled={!command.trim()}
-                  className="px-4 py-2 bg-[#238636] text-white rounded-md hover:bg-[#2ea043] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
+          {/* Command Input */}
+          <div className="border-t border-border bg-card p-3">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={command}
+                onChange={(e) => setCommand(e.target.value)}
+                onKeyPress={(e) => {
+                  if (e.key === "Enter") handleSendCommand();
+                }}
+                placeholder="Enter command..."
+                className="flex-1 px-3 py-2 bg-input-background text-foreground rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
+              />
+              <button
+                onClick={handleSendCommand}
+                disabled={!command.trim()}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Right: Detailed Stats - Hidden on mobile, shown as sidebar on desktop */}
+      <div className="hidden lg:flex lg:w-80 flex-col bg-background overflow-y-auto border-l border-border">
+        <div className="h-10 border-b border-border bg-card flex items-center px-3 gap-2 text-muted-foreground">
+          <Database className="w-4 h-4" />
+          <span>Detailed Stats</span>
+        </div>
+
+        <div className="p-4 space-y-4">
+          {/* Status */}
+          <div>
+            <div className="text-muted-foreground mb-2">Status</div>
+            <div className="flex items-center gap-2 p-3 bg-card rounded-lg border border-border">
+              <div className={`w-3 h-3 rounded-full ${getStatusColor(agent.status)}`} />
+              <span className="capitalize text-card-foreground">{agent.status}</span>
+            </div>
+          </div>
+
+          {/* Current Task */}
+          {agent.currentTask && (
+            <div>
+              <div className="text-muted-foreground mb-2">Current Task</div>
+              <div className="p-3 bg-card rounded-lg border border-border text-card-foreground">
+                {agent.currentTask}
+              </div>
+            </div>
+          )}
+
+          {/* Token Breakdown */}
+          <div>
+            <div className="text-muted-foreground mb-2">Token Breakdown</div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                <span className="text-card-foreground">Input</span>
+                <span className="text-primary">{formatNumber(agent.tokenUsage.input)}</span>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                <span className="text-card-foreground">Output</span>
+                <span className="text-accent-foreground">{formatNumber(agent.tokenUsage.output)}</span>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                <span className="text-card-foreground">Cache Read</span>
+                <span className="text-success">{formatNumber(agent.tokenUsage.cacheRead)}</span>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                <span className="text-card-foreground">Cache Creation</span>
+                <span className="text-muted-foreground">{formatNumber(agent.tokenUsage.cacheCreation)}</span>
               </div>
             </div>
           </div>
 
-          {/* Right: Detailed Stats */}
-          <div className="w-80 flex flex-col bg-[#0d1117] overflow-y-auto">
-            <div className="h-10 border-b border-[#30363d] bg-[#161b22] flex items-center px-3 gap-2 text-[#8b949e]">
-              <Database className="w-4 h-4" />
-              <span>Detailed Stats</span>
-            </div>
-
-            <div className="p-4 space-y-4">
-              {/* Status */}
-              <div>
-                <div className="text-[#8b949e] mb-2">Status</div>
-                <div className="flex items-center gap-2 p-3 bg-[#161b22] rounded-lg border border-[#30363d]">
-                  <div className={`w-3 h-3 rounded-full ${getStatusColor(agent.status)}`} />
-                  <span className="capitalize text-[#c9d1d9]">{agent.status}</span>
-                </div>
+          {/* API Stats */}
+          <div>
+            <div className="text-muted-foreground mb-2">API Statistics</div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                <span className="text-card-foreground">Success</span>
+                <span className="text-success">{agent.apiCalls.success}</span>
               </div>
-
-              {/* Current Task */}
-              {agent.currentTask && (
-                <div>
-                  <div className="text-[#8b949e] mb-2">Current Task</div>
-                  <div className="p-3 bg-[#161b22] rounded-lg border border-[#30363d] text-[#c9d1d9]">
-                    {agent.currentTask}
-                  </div>
-                </div>
-              )}
-
-              {/* Token Breakdown */}
-              <div>
-                <div className="text-[#8b949e] mb-2">Token Breakdown</div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between p-2 bg-[#161b22] rounded border border-[#30363d]">
-                    <span className="text-[#c9d1d9]">Input</span>
-                    <span className="text-[#58a6ff]">{formatNumber(agent.tokenUsage.input)}</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 bg-[#161b22] rounded border border-[#30363d]">
-                    <span className="text-[#c9d1d9]">Output</span>
-                    <span className="text-[#a371f7]">{formatNumber(agent.tokenUsage.output)}</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 bg-[#161b22] rounded border border-[#30363d]">
-                    <span className="text-[#c9d1d9]">Cache Read</span>
-                    <span className="text-[#3fb950]">{formatNumber(agent.tokenUsage.cacheRead)}</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 bg-[#161b22] rounded border border-[#30363d]">
-                    <span className="text-[#c9d1d9]">Cache Creation</span>
-                    <span className="text-[#8b949e]">{formatNumber(agent.tokenUsage.cacheCreation)}</span>
-                  </div>
-                </div>
+              <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                <span className="text-card-foreground">Errors</span>
+                <span className="text-destructive">{agent.apiCalls.errors}</span>
               </div>
-
-              {/* API Stats */}
-              <div>
-                <div className="text-[#8b949e] mb-2">API Statistics</div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between p-2 bg-[#161b22] rounded border border-[#30363d]">
-                    <span className="text-[#c9d1d9]">Success</span>
-                    <span className="text-[#3fb950]">{agent.apiCalls.success}</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 bg-[#161b22] rounded border border-[#30363d]">
-                    <span className="text-[#c9d1d9]">Errors</span>
-                    <span className="text-[#f85149]">{agent.apiCalls.errors}</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 bg-[#161b22] rounded border border-[#30363d]">
-                    <span className="text-[#c9d1d9]">Success Rate</span>
-                    <span className="text-[#c9d1d9]">
-                      {((agent.apiCalls.success / agent.apiCalls.total) * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                </div>
+              <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                <span className="text-card-foreground">Success Rate</span>
+                <span className="text-card-foreground">
+                  {((agent.apiCalls.success / agent.apiCalls.total) * 100).toFixed(1)}%
+                </span>
               </div>
-
-              {/* General Info */}
-              <div>
-                <div className="text-[#8b949e] mb-2">General Info</div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="p-3 bg-[#161b22] rounded-lg border border-[#30363d]">
-                    <div className="text-[#8b949e] flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      Uptime
-                    </div>
-                    <div className="text-[#c9d1d9] mt-1">{agent.uptime}</div>
-                  </div>
-                  <div className="p-3 bg-[#161b22] rounded-lg border border-[#30363d]">
-                    <div className="text-[#8b949e]">Tasks</div>
-                    <div className="text-[#c9d1d9] mt-1">{agent.tasksCompleted}</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Last Active */}
-              <div>
-                <div className="text-[#8b949e] mb-2">Last Active</div>
-                <div className="p-3 bg-[#161b22] rounded-lg border border-[#30363d] text-[#c9d1d9]">
-                  {agent.lastActive}
-                </div>
-              </div>
-
-              {/* Error Warning */}
-              {agent.status === "error" && (
-                <div className="p-3 bg-[#f8514933] rounded-lg border border-[#f8514966]">
-                  <div className="flex items-center gap-2 text-[#ff7b72] mb-1">
-                    <AlertCircle className="w-4 h-4" />
-                    <span>Agent Error</span>
-                  </div>
-                  <div className="text-[#ff7b72]/80">
-                    {agent.currentTask || "Agent encountered an error"}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
+
+          {/* General Info */}
+          <div>
+            <div className="text-muted-foreground mb-2">General Info</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="p-3 bg-card rounded-lg border border-border">
+                <div className="text-muted-foreground flex items-center gap-1">
+                  <Clock className="w-3 h-3" />
+                  Uptime
+                </div>
+                <div className="text-card-foreground mt-1">{agent.uptime}</div>
+              </div>
+              <div className="p-3 bg-card rounded-lg border border-border">
+                <div className="text-muted-foreground">Tasks</div>
+                <div className="text-card-foreground mt-1">{agent.tasksCompleted}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Last Active */}
+          <div>
+            <div className="text-muted-foreground mb-2">Last Active</div>
+            <div className="p-3 bg-card rounded-lg border border-border text-card-foreground">
+              {agent.lastActive}
+            </div>
+          </div>
+
+          {/* Error Warning */}
+          {agent.status === "error" && (
+            <div className="p-3 bg-destructive/10 rounded-lg border border-destructive/20">
+              <div className="flex items-center gap-2 text-destructive mb-1">
+                <AlertCircle className="w-4 h-4" />
+                <span>Agent Error</span>
+              </div>
+              <div className="text-destructive-foreground">
+                {agent.currentTask || "Agent encountered an error"}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

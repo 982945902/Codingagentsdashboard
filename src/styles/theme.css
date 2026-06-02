@@ -39,10 +39,17 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Agent status colors (for light mode) */
+  --status-running: #2ea043;
+  --status-error: #cf222e;
+  --status-idle: #bf8700;
+  --status-stopped: #57606a;
+  --success: #1a7f37;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  --background: #0d1117;
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.145 0 0);
   --card-foreground: oklch(0.985 0 0);
@@ -76,6 +83,13 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(0.269 0 0);
   --sidebar-ring: oklch(0.439 0 0);
+
+  /* Agent status colors (for dark mode) */
+  --status-running: #3fb950;
+  --status-error: #f85149;
+  --status-idle: #d29922;
+  --status-stopped: #6e7681;
+  --success: #3fb950;
 }
 
 @theme inline {
@@ -105,6 +119,11 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-success: var(--success);
+  --color-status-running: var(--status-running);
+  --color-status-error: var(--status-error);
+  --color-status-idle: var(--status-idle);
+  --color-status-stopped: var(--status-stopped);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
