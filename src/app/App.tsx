@@ -10,12 +10,26 @@ export interface Agent {
   status: "running" | "idle" | "error" | "stopped";
   currentTask: string | null;
   uptime: string;
-  cpu: number;
-  memory: number;
   tasksCompleted: number;
   lastActive: string;
   branch?: string;
   logs: string[];
+  // Model metrics
+  tokenUsage: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheCreation: number;
+  };
+  costUSD: number;
+  cacheHitRate: number;
+  apiCalls: {
+    total: number;
+    success: number;
+    errors: number;
+  };
+  model: string;
+  contextUsage: number; // Percentage of context window used
 }
 
 export interface Task {
@@ -29,7 +43,6 @@ export interface Task {
 }
 
 export default function App() {
-  const [view, setView] = useState<"kanban" | "workspace">("kanban");
   const [showSettings, setShowSettings] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
 
@@ -40,8 +53,6 @@ export default function App() {
       status: "running",
       currentTask: "Building React components for dashboard",
       uptime: "2h 34m",
-      cpu: 45,
-      memory: 62,
       tasksCompleted: 12,
       lastActive: "2 mins ago",
       branch: "feature/dashboard-ui",
@@ -50,6 +61,17 @@ export default function App() {
         "[10:24] Compiling components...",
         "[10:25] Build successful",
       ],
+      tokenUsage: {
+        input: 145230,
+        output: 52340,
+        cacheRead: 89450,
+        cacheCreation: 12300,
+      },
+      costUSD: 2.45,
+      cacheHitRate: 62,
+      apiCalls: { total: 234, success: 232, errors: 2 },
+      model: "claude-sonnet-4",
+      contextUsage: 45,
     },
     {
       id: "agent-002",
@@ -57,8 +79,6 @@ export default function App() {
       status: "running",
       currentTask: "Optimizing database queries",
       uptime: "5h 12m",
-      cpu: 28,
-      memory: 48,
       tasksCompleted: 8,
       lastActive: "5 mins ago",
       branch: "feature/db-optimization",
@@ -67,6 +87,17 @@ export default function App() {
         "[09:16] Analyzing query performance...",
         "[09:45] Applied index optimizations",
       ],
+      tokenUsage: {
+        input: 98420,
+        output: 34210,
+        cacheRead: 45670,
+        cacheCreation: 8900,
+      },
+      costUSD: 1.67,
+      cacheHitRate: 48,
+      apiCalls: { total: 156, success: 155, errors: 1 },
+      model: "claude-sonnet-4",
+      contextUsage: 28,
     },
     {
       id: "agent-003",
@@ -74,8 +105,6 @@ export default function App() {
       status: "idle",
       currentTask: null,
       uptime: "1h 45m",
-      cpu: 5,
-      memory: 15,
       tasksCompleted: 24,
       lastActive: "15 mins ago",
       branch: "main",
@@ -84,6 +113,17 @@ export default function App() {
         "[08:31] All tests passed (24/24)",
         "[08:32] Waiting for new tasks...",
       ],
+      tokenUsage: {
+        input: 234560,
+        output: 89340,
+        cacheRead: 156780,
+        cacheCreation: 18900,
+      },
+      costUSD: 3.89,
+      cacheHitRate: 71,
+      apiCalls: { total: 412, success: 412, errors: 0 },
+      model: "claude-sonnet-4",
+      contextUsage: 15,
     },
     {
       id: "agent-004",
@@ -91,8 +131,6 @@ export default function App() {
       status: "error",
       currentTask: "Connection lost during review",
       uptime: "3h 22m",
-      cpu: 0,
-      memory: 12,
       tasksCompleted: 6,
       lastActive: "1h ago",
       branch: "feature/auth-module",
@@ -101,6 +139,17 @@ export default function App() {
         "[07:15] Found 3 issues",
         "[07:30] ERROR: Connection timeout",
       ],
+      tokenUsage: {
+        input: 67890,
+        output: 23450,
+        cacheRead: 12340,
+        cacheCreation: 5600,
+      },
+      costUSD: 1.12,
+      cacheHitRate: 18,
+      apiCalls: { total: 89, success: 86, errors: 3 },
+      model: "claude-sonnet-4",
+      contextUsage: 82,
     },
   ]);
 
@@ -152,43 +201,49 @@ export default function App() {
     },
   ]);
 
+  // Calculate global stats
+  const globalStats = {
+    totalTokens: agents.reduce((sum, a) => sum + a.tokenUsage.input + a.tokenUsage.output, 0),
+    totalCost: agents.reduce((sum, a) => sum + a.costUSD, 0),
+    avgCacheHitRate: agents.reduce((sum, a) => sum + a.cacheHitRate, 0) / agents.length,
+    totalApiCalls: agents.reduce((sum, a) => sum + a.apiCalls.total, 0),
+    successRate: (agents.reduce((sum, a) => sum + a.apiCalls.success, 0) /
+                  agents.reduce((sum, a) => sum + a.apiCalls.total, 0)) * 100,
+  };
+
   return (
     <div className="size-full bg-[#0d1117] flex flex-col overflow-hidden">
       {/* Top Navigation Bar */}
       <div className="h-14 border-b border-[#30363d] bg-[#161b22] flex items-center justify-between px-5">
         <div className="flex items-center gap-3">
-          <div className="p-1.5 rounded-lg bg-[#21262d]">
-            <Activity className="w-4 h-4 text-[#58a6ff]" />
-          </div>
-          <span className="text-[#c9d1d9]">Coding Agents</span>
+          {selectedAgent ? (
+            <>
+              <button
+                onClick={() => setSelectedAgent(null)}
+                className="p-1.5 rounded-lg bg-[#21262d] hover:bg-[#30363d] transition-colors"
+              >
+                <LayoutGrid className="w-4 h-4 text-[#58a6ff]" />
+              </button>
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${
+                  selectedAgent.status === "running" ? "bg-[#3fb950]" :
+                  selectedAgent.status === "error" ? "bg-[#f85149]" :
+                  selectedAgent.status === "idle" ? "bg-[#d29922]" : "bg-[#6e7681]"
+                }`} />
+                <span className="text-[#c9d1d9]">{selectedAgent.name}</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="p-1.5 rounded-lg bg-[#21262d]">
+                <Activity className="w-4 h-4 text-[#58a6ff]" />
+              </div>
+              <span className="text-[#c9d1d9]">Coding Agents</span>
+            </>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-[#21262d] border border-[#30363d]">
-            <button
-              onClick={() => setView("kanban")}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors ${
-                view === "kanban"
-                  ? "bg-[#1f6feb] text-white"
-                  : "text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#30363d]"
-              }`}
-            >
-              <LayoutGrid className="w-4 h-4" />
-              <span>Kanban</span>
-            </button>
-            <button
-              onClick={() => setView("workspace")}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors ${
-                view === "workspace"
-                  ? "bg-[#1f6feb] text-white"
-                  : "text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#30363d]"
-              }`}
-            >
-              <Terminal className="w-4 h-4" />
-              <span>Workspace</span>
-            </button>
-          </div>
-
           <button
             onClick={() => setShowSettings(!showSettings)}
             className="p-2 rounded-lg bg-[#21262d] border border-[#30363d] hover:bg-[#30363d] transition-colors text-[#8b949e]"
@@ -200,16 +255,16 @@ export default function App() {
 
       {/* Main Content */}
       <div className="flex-1 overflow-hidden">
-        {view === "kanban" ? (
+        {selectedAgent ? (
+          <WorkspacePanel
+            agent={selectedAgent}
+            onBack={() => setSelectedAgent(null)}
+          />
+        ) : (
           <KanbanBoard
             tasks={tasks}
             agents={agents}
-            onSelectAgent={setSelectedAgent}
-          />
-        ) : (
-          <WorkspacePanel
-            agents={agents}
-            selectedAgent={selectedAgent}
+            globalStats={globalStats}
             onSelectAgent={setSelectedAgent}
           />
         )}

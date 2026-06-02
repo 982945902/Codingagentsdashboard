@@ -1,147 +1,223 @@
 import { Agent, Task } from "../App";
-import { GripVertical, User, AlertCircle, Clock } from "lucide-react";
+import { DollarSign, Zap, TrendingUp, Activity, Clock, AlertCircle } from "lucide-react";
+
+interface GlobalStats {
+  totalTokens: number;
+  totalCost: number;
+  avgCacheHitRate: number;
+  totalApiCalls: number;
+  successRate: number;
+}
 
 interface KanbanBoardProps {
   tasks: Task[];
   agents: Agent[];
+  globalStats: GlobalStats;
   onSelectAgent: (agent: Agent) => void;
 }
 
-export function KanbanBoard({ tasks, agents, onSelectAgent }: KanbanBoardProps) {
-  const columns: Array<{
-    id: Task["status"];
-    title: string;
-    color: string;
-  }> = [
-    { id: "backlog", title: "Backlog", color: "bg-gray-500" },
-    { id: "in-progress", title: "In Progress", color: "bg-blue-500" },
-    { id: "review", title: "Review", color: "bg-yellow-500" },
-    { id: "done", title: "Done", color: "bg-green-500" },
-  ];
-
-  const getTasksByStatus = (status: Task["status"]) => {
-    return tasks.filter((task) => task.status === status);
+export function KanbanBoard({ tasks, agents, globalStats, onSelectAgent }: KanbanBoardProps) {
+  const formatNumber = (num: number) => {
+    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+    return num.toString();
   };
 
-  const getAgentById = (id: string | null) => {
-    if (!id) return null;
-    return agents.find((agent) => agent.id === id);
+  const getStatusColor = (status: Agent["status"]) => {
+    switch (status) {
+      case "running":
+        return "bg-[#3fb950]";
+      case "error":
+        return "bg-[#f85149]";
+      case "idle":
+        return "bg-[#d29922]";
+      default:
+        return "bg-[#6e7681]";
+    }
   };
 
-  const getPriorityColor = (priority: Task["priority"]) => {
-    switch (priority) {
-      case "high":
-        return "text-red-600 dark:text-red-400";
-      case "medium":
-        return "text-yellow-600 dark:text-yellow-400";
-      case "low":
-        return "text-green-600 dark:text-green-400";
+  const getStatusBgColor = (status: Agent["status"]) => {
+    switch (status) {
+      case "running":
+        return "bg-[#3fb95033]";
+      case "error":
+        return "bg-[#f8514933]";
+      case "idle":
+        return "bg-[#d2940033]";
+      default:
+        return "bg-[#6e768133]";
     }
   };
 
   return (
-    <div className="size-full overflow-x-auto p-4 bg-[#0d1117]">
-      <div className="flex gap-4 h-full min-w-max">
-        {columns.map((column) => {
-          const columnTasks = getTasksByStatus(column.id);
-          return (
-            <div key={column.id} className="flex-shrink-0 w-80 flex flex-col">
-              {/* Column Header */}
-              <div className="flex items-center gap-2 mb-3">
-                <div className={`w-1 h-5 ${column.color} rounded-full`} />
-                <h3 className="text-[#c9d1d9]">{column.title}</h3>
-                <span className="ml-auto px-2 py-0.5 bg-[#21262d] rounded-md text-[#8b949e] border border-[#30363d]">
-                  {columnTasks.length}
-                </span>
-              </div>
+    <div className="size-full overflow-y-auto bg-[#0d1117] p-6">
+      {/* Global Stats */}
+      <div className="mb-6">
+        <h2 className="text-[#c9d1d9] mb-4">Global Statistics</h2>
+        <div className="grid grid-cols-5 gap-4">
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
+            <div className="flex items-center gap-2 text-[#8b949e] mb-2">
+              <Activity className="w-4 h-4" />
+              <span>Total Tokens</span>
+            </div>
+            <div className="text-2xl text-[#c9d1d9]">{formatNumber(globalStats.totalTokens)}</div>
+          </div>
 
-              {/* Tasks */}
-              <div className="flex-1 space-y-2 overflow-y-auto">
-                {columnTasks.map((task) => {
-                  const agent = getAgentById(task.assignedTo);
-                  return (
-                    <div
-                      key={task.id}
-                      className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 hover:border-[#58a6ff] transition-colors cursor-move group"
-                    >
-                      {/* Drag Handle */}
-                      <div className="flex items-start gap-2 mb-2">
-                        <GripVertical className="w-4 h-4 text-[#484f58] opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[#c9d1d9] mb-1">
-                            {task.title}
-                          </div>
-                          <p className="text-[#8b949e] line-clamp-2">
-                            {task.description}
-                          </p>
-                        </div>
-                      </div>
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
+            <div className="flex items-center gap-2 text-[#8b949e] mb-2">
+              <DollarSign className="w-4 h-4" />
+              <span>Total Cost</span>
+            </div>
+            <div className="text-2xl text-[#c9d1d9]">${globalStats.totalCost.toFixed(2)}</div>
+          </div>
 
-                      {/* Task Meta */}
-                      <div className="flex items-center justify-between mt-3">
-                        <div className="flex items-center gap-2">
-                          {agent ? (
-                            <button
-                              onClick={() => onSelectAgent(agent)}
-                              className="flex items-center gap-1.5 px-2 py-1 bg-[#21262d] rounded-md hover:bg-[#30363d] transition-colors border border-[#30363d]"
-                            >
-                              <div
-                                className={`w-2 h-2 rounded-full ${
-                                  agent.status === "running"
-                                    ? "bg-[#3fb950]"
-                                    : agent.status === "error"
-                                    ? "bg-[#f85149]"
-                                    : "bg-[#6e7681]"
-                                }`}
-                              />
-                              <User className="w-3 h-3 text-[#8b949e]" />
-                              <span className="text-[#c9d1d9]">
-                                {agent.name.split(" ")[0]}
-                              </span>
-                            </button>
-                          ) : (
-                            <div className="flex items-center gap-1.5 text-[#8b949e] px-2 py-1 bg-[#21262d] rounded-md border border-[#30363d]">
-                              <User className="w-3 h-3" />
-                              <span>Unassigned</span>
-                            </div>
-                          )}
-                        </div>
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
+            <div className="flex items-center gap-2 text-[#8b949e] mb-2">
+              <Zap className="w-4 h-4" />
+              <span>Avg Cache Hit</span>
+            </div>
+            <div className="text-2xl text-[#3fb950]">{globalStats.avgCacheHitRate.toFixed(0)}%</div>
+          </div>
 
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`uppercase px-1.5 py-0.5 rounded text-xs ${
-                              task.priority === "high"
-                                ? "bg-[#f8514933] text-[#ff7b72] border border-[#f8514966]"
-                                : task.priority === "medium"
-                                ? "bg-[#d2940033] text-[#f0883e] border border-[#d2940066]"
-                                : "bg-[#3fb95033] text-[#56d364] border border-[#3fb95066]"
-                            }`}
-                          >
-                            {task.priority}
-                          </span>
-                        </div>
-                      </div>
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
+            <div className="flex items-center gap-2 text-[#8b949e] mb-2">
+              <TrendingUp className="w-4 h-4" />
+              <span>API Calls</span>
+            </div>
+            <div className="text-2xl text-[#c9d1d9]">{globalStats.totalApiCalls}</div>
+          </div>
 
-                      {/* Warning for error status */}
-                      {agent?.status === "error" && (
-                        <div className="mt-2 flex items-center gap-1.5 text-[#ff7b72] bg-[#f8514933] px-2 py-1 rounded border border-[#f8514966]">
-                          <AlertCircle className="w-3 h-3" />
-                          <span>Agent error</span>
-                        </div>
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
+            <div className="flex items-center gap-2 text-[#8b949e] mb-2">
+              <TrendingUp className="w-4 h-4" />
+              <span>Success Rate</span>
+            </div>
+            <div className="text-2xl text-[#3fb950]">{globalStats.successRate.toFixed(1)}%</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Agents Grid */}
+      <div>
+        <h2 className="text-[#c9d1d9] mb-4">Agents ({agents.length})</h2>
+        <div className="grid grid-cols-2 gap-4">
+          {agents.map((agent) => (
+            <button
+              key={agent.id}
+              onClick={() => onSelectAgent(agent)}
+              className="bg-[#161b22] border border-[#30363d] rounded-lg p-5 hover:border-[#58a6ff] transition-all text-left group"
+            >
+              {/* Header */}
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className={`w-3 h-3 rounded-full ${getStatusColor(agent.status)} shadow-lg`} />
+                  <div>
+                    <h3 className="text-[#c9d1d9] mb-1">{agent.name}</h3>
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-[#8b949e]">{agent.model}</span>
+                      {agent.branch && (
+                        <>
+                          <span className="text-[#30363d]">•</span>
+                          <span className="text-[#8b949e]">{agent.branch}</span>
+                        </>
                       )}
                     </div>
-                  );
-                })}
+                  </div>
+                </div>
 
-                {columnTasks.length === 0 && (
-                  <div className="flex items-center justify-center h-32 text-[#8b949e] border-2 border-dashed border-[#30363d] rounded-lg">
-                    No tasks
+                <div className={`px-3 py-1 rounded-md ${getStatusBgColor(agent.status)} border border-[#30363d]`}>
+                  <span className="text-xs capitalize text-[#c9d1d9]">{agent.status}</span>
+                </div>
+              </div>
+
+              {/* Current Task */}
+              {agent.currentTask ? (
+                <div className="mb-4 p-3 bg-[#0d1117] rounded-lg border border-[#30363d]">
+                  <div className="text-xs text-[#8b949e] mb-1">Current Task</div>
+                  <div className="text-sm text-[#c9d1d9] line-clamp-2">{agent.currentTask}</div>
+                </div>
+              ) : (
+                <div className="mb-4 p-3 bg-[#0d1117] rounded-lg border border-[#30363d]">
+                  <div className="text-sm text-[#8b949e]">No active task</div>
+                </div>
+              )}
+
+              {/* Metrics Grid */}
+              <div className="grid grid-cols-4 gap-2 mb-3">
+                <div className="bg-[#0d1117] rounded-lg p-2 border border-[#30363d]">
+                  <div className="text-xs text-[#8b949e] mb-1">Tokens</div>
+                  <div className="text-sm text-[#c9d1d9]">
+                    {formatNumber(agent.tokenUsage.input + agent.tokenUsage.output)}
+                  </div>
+                </div>
+
+                <div className="bg-[#0d1117] rounded-lg p-2 border border-[#30363d]">
+                  <div className="text-xs text-[#8b949e] mb-1">Cost</div>
+                  <div className="text-sm text-[#c9d1d9]">${agent.costUSD.toFixed(2)}</div>
+                </div>
+
+                <div className="bg-[#0d1117] rounded-lg p-2 border border-[#30363d]">
+                  <div className="text-xs text-[#8b949e] mb-1">Cache</div>
+                  <div className="text-sm text-[#3fb950]">{agent.cacheHitRate}%</div>
+                </div>
+
+                <div className="bg-[#0d1117] rounded-lg p-2 border border-[#30363d]">
+                  <div className="text-xs text-[#8b949e] mb-1">Tasks</div>
+                  <div className="text-sm text-[#c9d1d9]">{agent.tasksCompleted}</div>
+                </div>
+              </div>
+
+              {/* Context Usage Bar */}
+              <div className="mb-3">
+                <div className="flex items-center justify-between mb-1.5 text-xs text-[#8b949e]">
+                  <span>Context Usage</span>
+                  <span>{agent.contextUsage}%</span>
+                </div>
+                <div className="w-full bg-[#21262d] rounded-full h-1.5">
+                  <div
+                    className={`h-1.5 rounded-full transition-all ${
+                      agent.contextUsage >= 95
+                        ? "bg-[#f85149]"
+                        : agent.contextUsage >= 80
+                        ? "bg-[#d29922]"
+                        : "bg-[#58a6ff]"
+                    }`}
+                    style={{ width: `${agent.contextUsage}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-between pt-3 border-t border-[#30363d]">
+                <div className="flex items-center gap-4 text-xs text-[#8b949e]">
+                  <div className="flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    <span>{agent.uptime}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Activity className="w-3 h-3" />
+                    <span>{agent.lastActive}</span>
+                  </div>
+                </div>
+
+                {agent.status === "error" && (
+                  <div className="flex items-center gap-1 text-[#f85149]">
+                    <AlertCircle className="w-3 h-3" />
+                    <span className="text-xs">Error</span>
                   </div>
                 )}
               </div>
-            </div>
-          );
-        })}
+
+              {/* API Success Rate */}
+              <div className="mt-3 flex items-center justify-between text-xs">
+                <span className="text-[#8b949e]">API Success Rate</span>
+                <span className="text-[#3fb950]">
+                  {((agent.apiCalls.success / agent.apiCalls.total) * 100).toFixed(1)}%
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
