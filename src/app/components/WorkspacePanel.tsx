@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import { Agent } from "../App";
+import type { AgentCommandAttachment } from "../lib/agentSocket";
 import {
   Terminal,
   Activity,
@@ -24,9 +25,22 @@ import {
 interface WorkspacePanelProps {
   agent: Agent;
   onBack: () => void;
+  onSendCommand: (
+    agentId: string,
+    command: string,
+    attachments?: AgentCommandAttachment[],
+  ) => string[];
+  onStartAgent?: (agentId: string) => void;
+  onStopAgent?: (agentId: string) => void;
 }
 
-export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
+export function WorkspacePanel({
+  agent,
+  onBack,
+  onSendCommand,
+  onStartAgent,
+  onStopAgent,
+}: WorkspacePanelProps) {
   const [command, setCommand] = useState("");
   const [terminalHistory, setTerminalHistory] = useState<string[]>([
     "$ Connection established",
@@ -41,21 +55,57 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
     return num.toString();
   };
 
-  const handleSendCommand = () => {
-    if (!command.trim() && attachedFiles.length === 0) return;
+  const handleSendCommand = (commandOverride?: string) => {
+    const commandText = commandOverride ?? command;
+    if (!commandText.trim() && attachedFiles.length === 0) return;
 
     const fileInfo = attachedFiles.length > 0
       ? ` [${attachedFiles.length} file(s) attached]`
       : '';
+    const attachments = attachedFiles.map((file) => ({
+      name: file.name,
+      size: file.size,
+      mimeType: file.type || "application/octet-stream",
+    }));
+    const responseLines = onSendCommand(
+      agent.id,
+      commandText,
+      attachments,
+    );
 
-    setTerminalHistory([
-      ...terminalHistory,
-      `$ ${command}${fileInfo}`,
-      `> Command sent to ${agent.name}`,
+    setTerminalHistory((currentHistory) => [
+      ...currentHistory,
+      `$ ${commandText || "attachments"}${fileInfo}`,
+      ...(responseLines.length > 0
+        ? responseLines
+        : [`> Command sent to ${agent.name}`]),
     ]);
-    console.log(`Sending command to ${agent.id}: ${command}`, attachedFiles);
     setCommand("");
     setAttachedFiles([]);
+  };
+
+  const handleQuickAction = (action: string) => {
+    if (action === "start" && onStartAgent) {
+      onStartAgent(agent.id);
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        "$ start",
+        `> Starting ${agent.name}`,
+      ]);
+      return;
+    }
+
+    if (action === "stop" && onStopAgent) {
+      onStopAgent(agent.id);
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        "$ stop",
+        `> Stopping ${agent.name}`,
+      ]);
+      return;
+    }
+
+    handleSendCommand(action);
   };
 
   const handleVoiceInput = () => {
@@ -80,7 +130,8 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    setAttachedFiles([...attachedFiles, ...files]);
+    setAttachedFiles((currentFiles) => [...currentFiles, ...files]);
+    e.target.value = "";
   };
 
   const handleRemoveFile = (index: number) => {
@@ -143,7 +194,7 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
               return (
                 <button
                   key={action.cmd}
-                  onClick={() => setCommand(action.cmd)}
+                  onClick={() => handleQuickAction(action.cmd)}
                   className="flex items-center gap-2 px-2 lg:px-3 py-1.5 bg-secondary hover:bg-accent rounded-md transition-colors text-secondary-foreground border border-border whitespace-nowrap"
                 >
                   <Icon className="w-4 h-4" />
@@ -303,8 +354,11 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
                 type="text"
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
-                onKeyPress={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) handleSendCommand();
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendCommand();
+                  }
                 }}
                 placeholder={isRecording ? "Recording..." : "Enter command or use voice..."}
                 disabled={isRecording}
@@ -313,7 +367,7 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
 
               {/* Send Button */}
               <button
-                onClick={handleSendCommand}
+                onClick={() => handleSendCommand()}
                 disabled={!command.trim() && attachedFiles.length === 0}
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >

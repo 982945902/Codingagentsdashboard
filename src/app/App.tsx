@@ -1,8 +1,14 @@
-import { useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { WorkspacePanel } from "./components/WorkspacePanel";
-import { ServerSettings } from "./components/ServerSettings";
-import { Activity, Settings, LayoutGrid, Terminal } from "lucide-react";
+import {
+  ServerSettings,
+  type StoredServerSettings,
+} from "./components/ServerSettings";
+import { useAgents } from "./hooks/useAgents";
+import type { ApiConfig } from "./lib/api";
+import type { AgentCommandAttachment } from "./lib/agentSocket";
+import { Activity, Settings, LayoutGrid } from "lucide-react";
 
 export interface Agent {
   id: string;
@@ -32,26 +38,10 @@ export interface Agent {
   contextUsage: number; // Percentage of context window used
 }
 
-export interface Task {
-  id: string;
-  title: string;
-  description: string;
-  status: "backlog" | "in-progress" | "review" | "done";
-  assignedTo: string | null;
-  priority: "low" | "medium" | "high";
-  createdAt: string;
-}
+const SETTINGS_KEY = "coding-agents-dashboard:server-settings";
+const SERVER_URL_PATTERN = /^https?:\/\/.+/i;
 
-export default function App() {
-  const [showSettings, setShowSettings] = useState(false);
-  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
-
-  // Enable dark mode by default
-  useEffect(() => {
-    document.documentElement.classList.add('dark');
-  }, []);
-
-  const [agents] = useState<Agent[]>([
+const INITIAL_AGENTS: Agent[] = [
     {
       id: "agent-001",
       name: "Frontend Builder",
@@ -156,64 +146,80 @@ export default function App() {
       model: "claude-sonnet-4",
       contextUsage: 82,
     },
-  ]);
+];
 
-  const [tasks] = useState<Task[]>([
-    {
-      id: "task-001",
-      title: "Implement user authentication",
-      description: "Add JWT-based auth system",
-      status: "in-progress",
-      assignedTo: "agent-001",
-      priority: "high",
-      createdAt: "2026-06-02T08:00:00Z",
-    },
-    {
-      id: "task-002",
-      title: "Optimize database queries",
-      description: "Improve query performance for dashboard",
-      status: "in-progress",
-      assignedTo: "agent-002",
-      priority: "high",
-      createdAt: "2026-06-02T07:30:00Z",
-    },
-    {
-      id: "task-003",
-      title: "Write unit tests",
-      description: "Add test coverage for API endpoints",
-      status: "done",
-      assignedTo: "agent-003",
-      priority: "medium",
-      createdAt: "2026-06-02T06:00:00Z",
-    },
-    {
-      id: "task-004",
-      title: "Review PR #234",
-      description: "Code review for authentication module",
-      status: "review",
-      assignedTo: "agent-004",
-      priority: "high",
-      createdAt: "2026-06-02T09:00:00Z",
-    },
-    {
-      id: "task-005",
-      title: "Setup CI/CD pipeline",
-      description: "Configure GitHub Actions workflow",
-      status: "backlog",
-      assignedTo: null,
-      priority: "medium",
-      createdAt: "2026-06-02T10:00:00Z",
-    },
-  ]);
+function loadApiConfig(): ApiConfig | null {
+  try {
+    const stored = window.localStorage.getItem(SETTINGS_KEY);
+    if (!stored) return null;
 
-  // Calculate global stats
+    const parsed = JSON.parse(stored) as Partial<StoredServerSettings>;
+    if (
+      !parsed.autoConnect ||
+      !parsed.serverUrl?.trim() ||
+      !parsed.apiKey?.trim() ||
+      !SERVER_URL_PATTERN.test(parsed.serverUrl.trim())
+    ) {
+      return null;
+    }
+
+    return {
+      serverUrl: parsed.serverUrl.trim(),
+      apiKey: parsed.apiKey.trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export default function App() {
+  const [showSettings, setShowSettings] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [apiConfig, setApiConfig] = useState<ApiConfig | null>(() => loadApiConfig());
+  const { agents, connectionState, sendCommand, startAgent, stopAgent } =
+    useAgents(apiConfig, INITIAL_AGENTS);
+
+  const selectedAgent = useMemo(
+    () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
+    [agents, selectedAgentId],
+  );
+
+  const handleSendCommand = (
+    agentId: string,
+    command: string,
+    attachments: AgentCommandAttachment[] = [],
+  ) => {
+    sendCommand(agentId, { command, attachments });
+    const agentName = agents.find((agent) => agent.id === agentId)?.name ?? "agent";
+    return [`> Command sent to ${agentName}`];
+  };
+
+  const handleSettingsSaved = (settings: StoredServerSettings) => {
+    setApiConfig(
+      settings.autoConnect &&
+        SERVER_URL_PATTERN.test(settings.serverUrl.trim()) &&
+        settings.apiKey.trim()
+        ? {
+            serverUrl: settings.serverUrl.trim(),
+            apiKey: settings.apiKey.trim(),
+          }
+        : null,
+    );
+    setShowSettings(false);
+  };
+
+  const totalApiCalls = agents.reduce((sum, a) => sum + a.apiCalls.total, 0);
+  const successfulApiCalls = agents.reduce((sum, a) => sum + a.apiCalls.success, 0);
+
   const globalStats = {
     totalTokens: agents.reduce((sum, a) => sum + a.tokenUsage.input + a.tokenUsage.output, 0),
     totalCost: agents.reduce((sum, a) => sum + a.costUSD, 0),
-    avgCacheHitRate: agents.reduce((sum, a) => sum + a.cacheHitRate, 0) / agents.length,
-    totalApiCalls: agents.reduce((sum, a) => sum + a.apiCalls.total, 0),
-    successRate: (agents.reduce((sum, a) => sum + a.apiCalls.success, 0) /
-                  agents.reduce((sum, a) => sum + a.apiCalls.total, 0)) * 100,
+    avgCacheHitRate:
+      agents.length > 0
+        ? agents.reduce((sum, a) => sum + a.cacheHitRate, 0) / agents.length
+        : 0,
+    totalApiCalls,
+    successRate: totalApiCalls > 0 ? (successfulApiCalls / totalApiCalls) * 100 : 0,
   };
 
   return (
@@ -224,7 +230,7 @@ export default function App() {
           {selectedAgent ? (
             <>
               <button
-                onClick={() => setSelectedAgent(null)}
+                onClick={() => setSelectedAgentId(null)}
                 className="p-1.5 rounded-lg bg-secondary hover:bg-accent transition-colors"
               >
                 <LayoutGrid className="w-4 h-4 text-primary" />
@@ -249,6 +255,22 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="hidden sm:flex items-center gap-2 px-2 py-1 rounded-md bg-secondary border border-border">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                connectionState === "connected"
+                  ? "bg-status-running"
+                  : connectionState === "connecting"
+                  ? "bg-status-idle"
+                  : connectionState === "error"
+                  ? "bg-status-error"
+                  : "bg-status-stopped"
+              }`}
+            />
+            <span className="text-xs text-muted-foreground capitalize">
+              {connectionState}
+            </span>
+          </div>
           <button
             onClick={() => setShowSettings(!showSettings)}
             className="p-2 rounded-lg bg-secondary border border-border hover:bg-accent transition-colors text-muted-foreground"
@@ -263,21 +285,26 @@ export default function App() {
         {selectedAgent ? (
           <WorkspacePanel
             agent={selectedAgent}
-            onBack={() => setSelectedAgent(null)}
+            onBack={() => setSelectedAgentId(null)}
+            onSendCommand={handleSendCommand}
+            onStartAgent={startAgent}
+            onStopAgent={stopAgent}
           />
         ) : (
           <KanbanBoard
-            tasks={tasks}
             agents={agents}
             globalStats={globalStats}
-            onSelectAgent={setSelectedAgent}
+            onSelectAgent={(agent) => setSelectedAgentId(agent.id)}
           />
         )}
       </div>
 
       {/* Settings Sidebar */}
       {showSettings && (
-        <ServerSettings onClose={() => setShowSettings(false)} />
+        <ServerSettings
+          onClose={() => setShowSettings(false)}
+          onSaved={handleSettingsSaved}
+        />
       )}
     </div>
   );
