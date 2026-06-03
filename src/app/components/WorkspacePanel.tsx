@@ -308,7 +308,7 @@ export function WorkspacePanel({ agent, onBack }: WorkspacePanelProps) {
                 }}
                 placeholder={isRecording ? "Recording..." : "Enter command or use voice..."}
                 disabled={isRecording}
-                className="flex-1 px-3 py-2 bg-input-background text-foreground rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm disabled:opacity-50"
+                className="flex-1 px-3 py-2 bg-input-background text-foreground rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm disabled:opacity-50 bg-[#000000]"
               />
 
               {/* Send Button */}
