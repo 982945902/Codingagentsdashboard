@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Agent } from "../App";
-import { listAgents, type AgentSnapshot, type ApiConfig } from "../lib/api";
+import {
+  createAgent as createAgentRest,
+  deleteAgent as deleteAgentRest,
+  listAgents,
+  sendAgentCommand,
+  startAgent as startAgentRest,
+  stopAgent as stopAgentRest,
+  type AgentSnapshot,
+  type ApiConfig,
+  type CreateAgentRequest,
+} from "../lib/api";
 import {
   openAgentSocket,
   type AgentCommandRequest,
   type AgentEvent,
+  type AgentMessage,
   type AgentSocket,
 } from "../lib/agentSocket";
 
@@ -17,7 +27,7 @@ function timestamp() {
   });
 }
 
-function appendLogs(agent: AgentSnapshot, lines: string[]) {
+function appendLogs(agent: AgentSnapshot, lines: string[]): AgentSnapshot {
   return {
     ...agent,
     logs: [...agent.logs, ...lines].slice(-200),
@@ -31,75 +41,74 @@ function upsertAgent(current: AgentSnapshot[], nextAgent: AgentSnapshot) {
     : [...current, nextAgent];
 }
 
-function applyCommandUpdate(agent: AgentSnapshot, payload: AgentCommandRequest) {
-  const normalizedCommand = payload.command.trim().toLowerCase();
-  const attachmentSuffix =
-    payload.attachments.length > 0
-      ? ` with ${payload.attachments.length} attachment(s)`
-      : "";
-  const commandLabel = payload.command.trim() || "attachments";
-  const nextAgent = appendLogs(agent, [
-    `[${timestamp()}] Received command: ${commandLabel}${attachmentSuffix}`,
-  ]);
-
-  switch (normalizedCommand) {
-    case "start":
-      return {
-        ...nextAgent,
-        status: "running" as const,
-        currentTask: nextAgent.currentTask ?? "Ready for commands",
-      };
-    case "pause":
-      return { ...nextAgent, status: "idle" as const };
-    case "restart":
-      return {
-        ...nextAgent,
-        status: "running" as const,
-        currentTask: nextAgent.currentTask ?? "Restarting workspace",
-        apiCalls: {
-          ...nextAgent.apiCalls,
-          total: nextAgent.apiCalls.total + 1,
-          success: nextAgent.apiCalls.success + 1,
-        },
-      };
-    case "stop":
-      return { ...nextAgent, status: "stopped" as const, currentTask: null };
-    case "status":
-      return appendLogs(nextAgent, [
-        `[${timestamp()}] ${nextAgent.name}: ${nextAgent.status}, ${nextAgent.apiCalls.success}/${nextAgent.apiCalls.total} successful API calls`,
-      ]);
-    default: {
-      const estimatedInput = Math.max(payload.command.length * 8, 120);
-      const estimatedOutput = Math.max(Math.round(payload.command.length * 3.5), 60);
-
-      return {
-        ...nextAgent,
-        status: "running" as const,
-        currentTask: payload.command.trim() || nextAgent.currentTask,
-        tokenUsage: {
-          input: nextAgent.tokenUsage.input + estimatedInput,
-          output: nextAgent.tokenUsage.output + estimatedOutput,
-          cacheRead:
-            nextAgent.tokenUsage.cacheRead + Math.round(estimatedInput * 0.4),
-          cacheCreation:
-            nextAgent.tokenUsage.cacheCreation + Math.round(estimatedInput * 0.08),
-        },
-        costUSD:
-          nextAgent.costUSD +
-          estimatedInput * 0.000003 +
-          estimatedOutput * 0.000015,
-        apiCalls: {
-          ...nextAgent.apiCalls,
-          total: nextAgent.apiCalls.total + 1,
-          success: nextAgent.apiCalls.success + 1,
-        },
-        contextUsage: Math.min(nextAgent.contextUsage + 2, 98),
-      };
-    }
-  }
+function appendOrReplaceMessage(messages: AgentMessage[], next: AgentMessage) {
+  return messages.some((m) => m.id === next.id)
+    ? messages.map((m) => (m.id === next.id ? next : m))
+    : [...messages, next];
 }
 
-function applyAgentEvent(current: AgentSnapshot[], event: AgentEvent) {
+function applyDelta(messages: AgentMessage[], messageId: string, delta: string) {
+  const exists = messages.some((m) => m.id === messageId);
+  if (!exists) {
+    // Synthesize a placeholder if the start event was missed.
+    return [
+      ...messages,
+      {
+        id: messageId,
+        role: "assistant" as const,
+        content: delta,
+        format: "markdown" as const,
+        streaming: true,
+        toolCalls: [],
+        createdAt: new Date().toISOString(),
+      },
+    ];
+  }
+  return messages.map((m) =>
+    m.id === messageId ? { ...m, content: m.content + delta, streaming: true } : m,
+  );
+}
+
+function applyToolCall(
+  messages: AgentMessage[],
+  messageId: string,
+  toolCallId: string,
+  toolName: string,
+  input: string,
+) {
+  return messages.map((m) => {
+    if (m.id !== messageId) return m;
+    if (m.toolCalls.some((tc) => tc.id === toolCallId)) return m;
+    return {
+      ...m,
+      toolCalls: [
+        ...m.toolCalls,
+        { id: toolCallId, name: toolName, input, status: "pending" as const, output: "" },
+      ],
+    };
+  });
+}
+
+function applyToolResult(
+  messages: AgentMessage[],
+  messageId: string,
+  toolCallId: string,
+  status: "success" | "error",
+  output: string,
+) {
+  return messages.map((m) =>
+    m.id === messageId
+      ? {
+          ...m,
+          toolCalls: m.toolCalls.map((tc) =>
+            tc.id === toolCallId ? { ...tc, status, output } : tc,
+          ),
+        }
+      : m,
+  );
+}
+
+function applyAgentEvent(current: AgentSnapshot[], event: AgentEvent): AgentSnapshot[] {
   switch (event.type) {
     case "agent.created":
     case "agent.updated":
@@ -126,16 +135,65 @@ function applyAgentEvent(current: AgentSnapshot[], event: AgentEvent) {
             }
           : agent,
       );
+    case "agent.message.start":
+      return current.map((agent) =>
+        agent.id === event.agentId
+          ? { ...agent, messages: appendOrReplaceMessage(agent.messages, event.message) }
+          : agent,
+      );
+    case "agent.message.delta":
+      return current.map((agent) =>
+        agent.id === event.agentId
+          ? { ...agent, messages: applyDelta(agent.messages, event.messageId, event.delta) }
+          : agent,
+      );
+    case "agent.message.end":
+      return current.map((agent) =>
+        agent.id === event.agentId
+          ? { ...agent, messages: appendOrReplaceMessage(agent.messages, event.message) }
+          : agent,
+      );
+    case "agent.tool.call":
+      return current.map((agent) =>
+        agent.id === event.agentId
+          ? {
+              ...agent,
+              messages: applyToolCall(
+                agent.messages,
+                event.messageId,
+                event.toolCallId,
+                event.toolName,
+                event.input,
+              ),
+            }
+          : agent,
+      );
+    case "agent.tool.result":
+      return current.map((agent) =>
+        agent.id === event.agentId
+          ? {
+              ...agent,
+              messages: applyToolResult(
+                agent.messages,
+                event.messageId,
+                event.toolCallId,
+                event.status,
+                event.output,
+              ),
+            }
+          : agent,
+      );
+    case "agent.turn.complete":
+      return current;
     default:
       return current;
   }
 }
 
-export function useAgents(config: ApiConfig | null, fallbackAgents: Agent[]) {
+export function useAgents(config: ApiConfig | null, fallbackAgents: AgentSnapshot[]) {
   const [agents, setAgents] = useState<AgentSnapshot[]>(fallbackAgents);
   const [socket, setSocket] = useState<AgentSocket | null>(null);
-  const [connectionState, setConnectionState] =
-    useState<ConnectionState>("offline");
+  const [connectionState, setConnectionState] = useState<ConnectionState>("offline");
 
   useEffect(() => {
     if (!config) {
@@ -159,9 +217,7 @@ export function useAgents(config: ApiConfig | null, fallbackAgents: Agent[]) {
 
     const nextSocket = openAgentSocket(config, {
       onEvent: (event) => {
-        if (!cancelled) {
-          setAgents((current) => applyAgentEvent(current, event));
-        }
+        if (!cancelled) setAgents((current) => applyAgentEvent(current, event));
       },
       onStateChange: (state) => {
         if (cancelled) return;
@@ -184,12 +240,18 @@ export function useAgents(config: ApiConfig | null, fallbackAgents: Agent[]) {
     (agentId: string, payload: AgentCommandRequest) => {
       setAgents((current) =>
         current.map((agent) =>
-          agent.id === agentId ? applyCommandUpdate(agent, payload) : agent,
+          agent.id === agentId
+            ? appendLogs(agent, [
+                `[${timestamp()}] > ${payload.command.trim() || "(attachments only)"}`,
+              ])
+            : agent,
         ),
       );
+
+      // Send via WebSocket only (avoid duplicate — REST + WS both trigger sendCommand on the backend)
       socket?.sendCommand(agentId, payload);
     },
-    [socket],
+    [socket, config],
   );
 
   const startAgent = useCallback(
@@ -197,17 +259,14 @@ export function useAgents(config: ApiConfig | null, fallbackAgents: Agent[]) {
       setAgents((current) =>
         current.map((agent) =>
           agent.id === agentId
-            ? {
-                ...appendLogs(agent, [`[${timestamp()}] Start requested`]),
-                status: "running",
-                currentTask: agent.currentTask ?? "Starting workspace",
-              }
+            ? appendLogs(agent, [`[${timestamp()}] Start requested`])
             : agent,
         ),
       );
+      // WebSocket only — avoid duplicate REST + WS
       socket?.startAgent(agentId);
     },
-    [socket],
+    [socket, config],
   );
 
   const stopAgent = useCallback(
@@ -215,21 +274,48 @@ export function useAgents(config: ApiConfig | null, fallbackAgents: Agent[]) {
       setAgents((current) =>
         current.map((agent) =>
           agent.id === agentId
-            ? {
-                ...appendLogs(agent, [`[${timestamp()}] Stop requested`]),
-                status: "stopped",
-                currentTask: null,
-              }
+            ? appendLogs(agent, [`[${timestamp()}] Stop requested`])
             : agent,
         ),
       );
+      // WebSocket only — avoid duplicate REST + WS
       socket?.stopAgent(agentId);
     },
-    [socket],
+    [socket, config],
+  );
+
+  const createAgent = useCallback(
+    async (request: CreateAgentRequest) => {
+      if (!config) throw new Error("Not connected to a server");
+      const { agent } = await createAgentRest(config, request);
+      setAgents((current) => upsertAgent(current, agent));
+      return agent;
+    },
+    [config],
+  );
+
+  const removeAgent = useCallback(
+    async (agentId: string) => {
+      if (!config) {
+        setAgents((current) => current.filter((a) => a.id !== agentId));
+        return;
+      }
+      await deleteAgentRest(config, agentId);
+      setAgents((current) => current.filter((a) => a.id !== agentId));
+    },
+    [config],
   );
 
   return useMemo(
-    () => ({ agents, connectionState, sendCommand, startAgent, stopAgent }),
-    [agents, connectionState, sendCommand, startAgent, stopAgent],
+    () => ({
+      agents,
+      connectionState,
+      sendCommand,
+      startAgent,
+      stopAgent,
+      createAgent,
+      removeAgent,
+    }),
+    [agents, connectionState, sendCommand, startAgent, stopAgent, createAgent, removeAgent],
   );
 }

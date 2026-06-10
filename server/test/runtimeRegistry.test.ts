@@ -5,6 +5,8 @@ describe("runtime registry", () => {
   it("maps mock agents to the deterministic mock runtime", () => {
     const runtime = createRuntimeForAgent({
       runtimeKind: "mock",
+      sessionId: null,
+      runtimeArgs: [],
     });
 
     expect(runtime.kind).toBe("mock");
@@ -13,6 +15,8 @@ describe("runtime registry", () => {
   it("maps codex agents to the codex CLI runtime", () => {
     const runtime = createRuntimeForAgent({
       runtimeKind: "codex",
+      sessionId: null,
+      runtimeArgs: [],
     });
 
     expect(runtime.kind).toBe("codex");
@@ -22,6 +26,8 @@ describe("runtime registry", () => {
   it("maps claude agents to the claude CLI runtime", () => {
     const runtime = createRuntimeForAgent({
       runtimeKind: "claude",
+      sessionId: "sess-resume-1",
+      runtimeArgs: ["--mode", "interactive"],
     });
 
     expect(runtime.kind).toBe("claude");

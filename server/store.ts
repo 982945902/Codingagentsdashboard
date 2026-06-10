@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   createAgentSchema,
   type AgentEvent,
@@ -5,16 +7,32 @@ import {
   type CreateAgentRequest,
 } from "../src/shared/contracts";
 
+export type StoreEvent =
+  | { type: "created"; agent: AgentSnapshot }
+  | { type: "updated"; agent: AgentSnapshot }
+  | { type: "deleted"; agentId: string }
+  | { type: "log"; agent: AgentSnapshot; line: string };
+
+export type StoreListener = (event: StoreEvent) => void;
+
 export interface AgentStore {
   list(): AgentSnapshot[];
   get(id: string): AgentSnapshot | undefined;
   create(request: CreateAgentRequest): AgentSnapshot;
   update(id: string, patch: Partial<AgentSnapshot>): AgentSnapshot | undefined;
+  delete(id: string): boolean;
   appendLog(id: string, line: string): AgentSnapshot | undefined;
   events(): AgentEvent[];
+  subscribe(listener: StoreListener): () => void;
 }
 
-const now = "2026-06-03T00:00:00.000Z";
+export interface AgentStoreOptions {
+  seed?: AgentSnapshot[];
+  /** Optional file path used to persist snapshots between server restarts. */
+  persistencePath?: string;
+}
+
+const SEED_TIMESTAMP = "2026-06-03T00:00:00.000Z";
 
 const seededAgents: AgentSnapshot[] = [
   {
@@ -39,8 +57,11 @@ const seededAgents: AgentSnapshot[] = [
     model: "claude-sonnet-4",
     contextUsage: 45,
     workspacePath: "/work/frontend",
-    createdAt: now,
-    updatedAt: now,
+    sessionId: null,
+    runtimeArgs: [],
+    messages: [],
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP,
   },
   {
     id: "agent-002",
@@ -64,8 +85,11 @@ const seededAgents: AgentSnapshot[] = [
     model: "claude-sonnet-4",
     contextUsage: 28,
     workspacePath: "/work/backend",
-    createdAt: now,
-    updatedAt: now,
+    sessionId: null,
+    runtimeArgs: [],
+    messages: [],
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP,
   },
   {
     id: "agent-003",
@@ -89,8 +113,11 @@ const seededAgents: AgentSnapshot[] = [
     model: "claude-sonnet-4",
     contextUsage: 15,
     workspacePath: "/work/testing",
-    createdAt: now,
-    updatedAt: now,
+    sessionId: null,
+    runtimeArgs: [],
+    messages: [],
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP,
   },
   {
     id: "agent-004",
@@ -114,8 +141,11 @@ const seededAgents: AgentSnapshot[] = [
     model: "claude-sonnet-4",
     contextUsage: 82,
     workspacePath: "/work/review",
-    createdAt: now,
-    updatedAt: now,
+    sessionId: null,
+    runtimeArgs: [],
+    messages: [],
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP,
   },
 ];
 
@@ -123,7 +153,12 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function event(agentId: string, type: AgentEvent["type"], message: string, snapshot?: AgentSnapshot): AgentEvent {
+function event(
+  agentId: string,
+  type: AgentEvent["type"],
+  message: string,
+  snapshot?: AgentSnapshot,
+): AgentEvent {
   return {
     id: crypto.randomUUID(),
     agentId,
@@ -134,9 +169,55 @@ function event(agentId: string, type: AgentEvent["type"], message: string, snaps
   };
 }
 
-export function createAgentStore(seed: AgentSnapshot[] = seededAgents): AgentStore {
+function loadFromDisk(path: string): AgentSnapshot[] | null {
+  try {
+    if (!existsSync(path)) return null;
+    const text = readFileSync(path, "utf8");
+    if (!text) return null;
+    const parsed = JSON.parse(text) as AgentSnapshot[];
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistSafely(path: string, agents: AgentSnapshot[]) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(agents, null, 2));
+  } catch {
+    // Best-effort persistence — never block the request path.
+  }
+}
+
+export function createAgentStore(
+  optionsOrSeed: AgentSnapshot[] | AgentStoreOptions = {},
+): AgentStore {
+  const options: AgentStoreOptions = Array.isArray(optionsOrSeed)
+    ? { seed: optionsOrSeed }
+    : optionsOrSeed;
+  const initialSeed = options.seed ?? seededAgents;
+  const restoredFromDisk = options.persistencePath
+    ? loadFromDisk(options.persistencePath)
+    : null;
+  const seed = restoredFromDisk ?? initialSeed;
+
   const agents = new Map(seed.map((agent) => [agent.id, clone(agent)]));
   const agentEvents: AgentEvent[] = [];
+  const listeners = new Set<StoreListener>();
+
+  function emit(storeEvent: StoreEvent) {
+    for (const listener of listeners) {
+      try {
+        listener(storeEvent);
+      } catch {
+        // Listeners must not break the store.
+      }
+    }
+    if (options.persistencePath) {
+      persistSafely(options.persistencePath, [...agents.values()]);
+    }
+  }
 
   return {
     list: () => [...agents.values()].map(clone),
@@ -165,33 +246,58 @@ export function createAgentStore(seed: AgentSnapshot[] = seededAgents): AgentSto
         model: parsed.model,
         contextUsage: 0,
         workspacePath: parsed.workspacePath,
+        sessionId: parsed.sessionId ?? null,
+        runtimeArgs: parsed.runtimeArgs ?? [],
+        messages: [],
         createdAt,
         updatedAt: createdAt,
       };
       agents.set(agent.id, agent);
       agentEvents.push(event(agent.id, "created", "Agent created", agent));
+      emit({ type: "created", agent: clone(agent) });
       return clone(agent);
     },
     update: (id, patch) => {
       const current = agents.get(id);
       if (!current) return undefined;
-      const next = { ...current, ...patch, id, updatedAt: new Date().toISOString() };
+      const next: AgentSnapshot = {
+        ...current,
+        ...patch,
+        id,
+        updatedAt: new Date().toISOString(),
+      };
       agents.set(id, next);
       agentEvents.push(event(id, "updated", "Agent updated", next));
+      emit({ type: "updated", agent: clone(next) });
       return clone(next);
+    },
+    delete: (id) => {
+      const existed = agents.delete(id);
+      if (existed) {
+        agentEvents.push(event(id, "deleted", "Agent deleted"));
+        emit({ type: "deleted", agentId: id });
+      }
+      return existed;
     },
     appendLog: (id, line) => {
       const current = agents.get(id);
       if (!current) return undefined;
-      const next = {
+      const next: AgentSnapshot = {
         ...current,
-        logs: [...current.logs, line].slice(-30),
+        logs: [...current.logs, line].slice(-200),
         updatedAt: new Date().toISOString(),
       };
       agents.set(id, next);
       agentEvents.push(event(id, "log", line, next));
+      emit({ type: "log", agent: clone(next), line });
       return clone(next);
     },
     events: () => agentEvents.map(clone),
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
   };
 }

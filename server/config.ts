@@ -6,5 +6,6 @@ export function loadServerSettings(env: Record<string, string | undefined> = Bun
     port: env.PORT,
     apiKey: env.API_KEY,
     corsOrigins: env.CORS_ORIGINS?.split(",").map((origin) => origin.trim()).filter(Boolean),
+    persistencePath: env.PERSISTENCE_PATH,
   });
 }

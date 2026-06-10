@@ -1,21 +1,58 @@
-import type { Agent } from "../App";
+import type { AgentMessage } from "./agentSocket";
 
 export interface ApiConfig {
   serverUrl: string;
   apiKey: string;
 }
 
+export type RuntimeKind = "mock" | "codex" | "claude";
+
 export interface CreateAgentRequest {
   name: string;
-  runtimeKind?: "mock" | "codex" | "claude";
+  runtimeKind?: RuntimeKind;
   workspacePath: string;
   model: string;
+  branch?: string;
+  currentTask?: string;
+  /** Resume an existing CLI session id (codex/claude). */
+  sessionId?: string;
+  runtimeArgs?: string[];
 }
 
-export type AgentSnapshot = Agent & {
-  runtimeKind?: string;
-  workspacePath?: string;
-};
+export interface CommandPayload {
+  command: string;
+  attachments?: Array<{ name: string; size: number; mimeType: string }>;
+}
+
+export interface AgentSnapshot {
+  id: string;
+  name: string;
+  runtimeKind: RuntimeKind;
+  status: "running" | "idle" | "error" | "stopped";
+  currentTask: string | null;
+  uptime: string;
+  tasksCompleted: number;
+  lastActive: string;
+  branch?: string;
+  logs: string[];
+  tokenUsage: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheCreation: number;
+  };
+  costUSD: number;
+  cacheHitRate: number;
+  apiCalls: { total: number; success: number; errors: number };
+  model: string;
+  contextUsage: number;
+  workspacePath: string;
+  sessionId: string | null;
+  runtimeArgs: string[];
+  messages: AgentMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
 
 function normalizeServerUrl(serverUrl: string) {
   return serverUrl.trim().replace(/\/+$/, "");
@@ -51,4 +88,34 @@ export function createAgent(config: ApiConfig, body: CreateAgentRequest) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function startAgent(config: ApiConfig, agentId: string) {
+  return requestJson<{ ok: true }>(config, `/api/agents/${encodeURIComponent(agentId)}/start`, {
+    method: "POST",
+  });
+}
+
+export function stopAgent(config: ApiConfig, agentId: string) {
+  return requestJson<{ ok: true }>(config, `/api/agents/${encodeURIComponent(agentId)}/stop`, {
+    method: "POST",
+  });
+}
+
+export function deleteAgent(config: ApiConfig, agentId: string) {
+  return requestJson<{ ok: true }>(config, `/api/agents/${encodeURIComponent(agentId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function sendAgentCommand(
+  config: ApiConfig,
+  agentId: string,
+  payload: CommandPayload,
+) {
+  return requestJson<{ ok: true }>(
+    config,
+    `/api/agents/${encodeURIComponent(agentId)}/commands`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
 }

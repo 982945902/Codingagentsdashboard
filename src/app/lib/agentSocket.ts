@@ -11,13 +11,51 @@ export interface AgentCommandRequest {
   attachments: AgentCommandAttachment[];
 }
 
+export interface AgentToolCall {
+  id: string;
+  name: string;
+  input: string;
+  status: "pending" | "success" | "error";
+  output: string;
+}
+
+export interface AgentMessage {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  format: "text" | "markdown";
+  streaming: boolean;
+  toolCalls: AgentToolCall[];
+  createdAt: string;
+}
+
 export type AgentEvent =
   | { type: "agent.created"; agent: AgentSnapshot }
   | { type: "agent.updated"; agent: AgentSnapshot }
   | { type: "agent.deleted"; agentId: string }
   | { type: "agent.log"; agentId: string; line: string }
   | { type: "command.ack"; agentId: string; command: string }
-  | { type: "command.error"; agentId: string; message: string };
+  | { type: "command.error"; agentId: string; message: string }
+  | { type: "agent.message.start"; agentId: string; message: AgentMessage }
+  | { type: "agent.message.delta"; agentId: string; messageId: string; delta: string }
+  | { type: "agent.message.end"; agentId: string; message: AgentMessage }
+  | {
+      type: "agent.tool.call";
+      agentId: string;
+      messageId: string;
+      toolCallId: string;
+      toolName: string;
+      input: string;
+    }
+  | {
+      type: "agent.tool.result";
+      agentId: string;
+      messageId: string;
+      toolCallId: string;
+      status: "success" | "error";
+      output: string;
+    }
+  | { type: "agent.turn.complete"; agentId: string };
 
 export type SocketState = "connecting" | "connected" | "closed" | "error";
 
