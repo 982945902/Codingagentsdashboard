@@ -94,9 +94,10 @@ describe("shared contracts", () => {
       apiKey: "secret",
     });
 
-    expect(parsed.host).toBe("0.0.0.0");
+    expect(parsed.host).toBe("127.0.0.1");
     expect(parsed.port).toBe(8787);
     expect(parsed.apiKey).toBe("secret");
     expect(parsed.corsOrigins).toEqual(["*"]);
+    expect(parsed.persistencePath).toBe(".data/agents.json");
   });
 });

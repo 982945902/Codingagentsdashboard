@@ -330,6 +330,34 @@ export function useAgents(config: ApiConfig | null) {
     [socket, config],
   );
 
+  const pauseAgent = useCallback(
+    (agentId: string) => {
+      setAgents((current) =>
+        current.map((agent) =>
+          agent.id === agentId
+            ? appendLogs(agent, [`[${timestamp()}] Pause requested`])
+            : agent,
+        ),
+      );
+      socket?.pauseAgent(agentId);
+    },
+    [socket, config],
+  );
+
+  const restartAgent = useCallback(
+    (agentId: string) => {
+      setAgents((current) =>
+        current.map((agent) =>
+          agent.id === agentId
+            ? appendLogs(agent, [`[${timestamp()}] Restart requested`])
+            : agent,
+        ),
+      );
+      socket?.restartAgent(agentId);
+    },
+    [socket, config],
+  );
+
   const respondToApproval = useCallback(
     (agentId: string, approvalId: string, decision: ApprovalDecision) => {
       // Optimistically clear the banner; the server echoes agent.approval.resolved.
@@ -375,6 +403,8 @@ export function useAgents(config: ApiConfig | null) {
       pendingApprovals,
       sendCommand,
       startAgent,
+      pauseAgent,
+      restartAgent,
       stopAgent,
       respondToApproval,
       createAgent,
@@ -386,6 +416,8 @@ export function useAgents(config: ApiConfig | null) {
       pendingApprovals,
       sendCommand,
       startAgent,
+      pauseAgent,
+      restartAgent,
       stopAgent,
       respondToApproval,
       createAgent,

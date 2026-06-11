@@ -78,6 +78,8 @@ export default function App() {
     pendingApprovals,
     sendCommand,
     startAgent,
+    pauseAgent,
+    restartAgent,
     stopAgent,
     respondToApproval,
     createAgent,
@@ -165,6 +167,8 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full ${
                   selectedAgent.status === "running" ? "bg-status-running" :
+                  selectedAgent.status === "busy" ? "bg-status-busy" :
+                  selectedAgent.status === "paused" ? "bg-status-paused" :
                   selectedAgent.status === "error" ? "bg-status-error" :
                   selectedAgent.status === "idle" ? "bg-status-idle" : "bg-status-stopped"
                 }`} />
@@ -215,6 +219,8 @@ export default function App() {
             onBack={() => setSelectedAgentId(null)}
             onSendCommand={handleSendCommand}
             onStartAgent={startAgent}
+            onPauseAgent={pauseAgent}
+            onRestartAgent={restartAgent}
             onStopAgent={stopAgent}
             allAgents={agents}
             pendingApprovals={pendingApprovals[selectedAgent.id] ?? []}

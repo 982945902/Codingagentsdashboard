@@ -190,6 +190,12 @@ export function createApp(options: AppOptions = {}): BunApp {
           case "agent.start":
             void supervisor.startAgent(message.agentId);
             return;
+          case "agent.pause":
+            void supervisor.pauseAgent(message.agentId);
+            return;
+          case "agent.restart":
+            void supervisor.restartAgent(message.agentId);
+            return;
           case "agent.stop":
             void supervisor.stopAgent(message.agentId);
             return;
@@ -333,6 +339,22 @@ export function createApp(options: AppOptions = {}): BunApp {
       const stopMatch = /^\/api\/agents\/([^/]+)\/stop$/.exec(url.pathname);
       if (request.method === "POST" && stopMatch) {
         const events = await supervisor.stopAgent(decodeURIComponent(stopMatch[1]));
+        const error = events.find((e) => e.type === "error");
+        if (error) return json(request, { error: error.message }, 400);
+        return json(request, { ok: true, events });
+      }
+
+      const pauseMatch = /^\/api\/agents\/([^/]+)\/pause$/.exec(url.pathname);
+      if (request.method === "POST" && pauseMatch) {
+        const events = await supervisor.pauseAgent(decodeURIComponent(pauseMatch[1]));
+        const error = events.find((e) => e.type === "error");
+        if (error) return json(request, { error: error.message }, 400);
+        return json(request, { ok: true, events });
+      }
+
+      const restartMatch = /^\/api\/agents\/([^/]+)\/restart$/.exec(url.pathname);
+      if (request.method === "POST" && restartMatch) {
+        const events = await supervisor.restartAgent(decodeURIComponent(restartMatch[1]));
         const error = events.find((e) => e.type === "error");
         if (error) return json(request, { error: error.message }, 400);
         return json(request, { ok: true, events });

@@ -3,7 +3,14 @@ import { z } from "zod";
 export const runtimeKindSchema = z.enum(["codex", "claude"]);
 export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
 
-export const agentStatusSchema = z.enum(["running", "idle", "error", "stopped"]);
+export const agentStatusSchema = z.enum([
+  "idle",
+  "running",
+  "busy",
+  "paused",
+  "stopped",
+  "error",
+]);
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 
 export const approvalDecisionSchema = z.enum(["allow", "deny"]);
@@ -148,6 +155,8 @@ export const agentCommandSchema = z.object({
         name: z.string().min(1),
         size: z.number().int().nonnegative(),
         mimeType: z.string().min(1),
+        encoding: z.enum(["text", "base64"]).optional(),
+        content: z.string().max(262_144).optional(),
       }),
     )
     .default([]),
@@ -158,6 +167,8 @@ export type AgentCommandRequest = {
     name: string;
     size: number;
     mimeType: string;
+    encoding?: "text" | "base64";
+    content?: string;
   }>;
 };
 
@@ -240,6 +251,8 @@ export type WsServerEvent = z.infer<typeof wsServerEventSchema>;
 /** Inbound (client -> server) messages. */
 export const wsClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent.start"), agentId: z.string().min(1) }),
+  z.object({ type: z.literal("agent.pause"), agentId: z.string().min(1) }),
+  z.object({ type: z.literal("agent.restart"), agentId: z.string().min(1) }),
   z.object({ type: z.literal("agent.stop"), agentId: z.string().min(1) }),
   z.object({
     type: z.literal("agent.command"),
@@ -256,12 +269,12 @@ export const wsClientMessageSchema = z.discriminatedUnion("type", [
 export type WsClientMessage = z.infer<typeof wsClientMessageSchema>;
 
 export const serverSettingsSchema = z.object({
-  host: z.string().default("0.0.0.0"),
+  host: z.string().default("127.0.0.1"),
   port: z.coerce.number().int().min(0).max(65535).default(8787),
   apiKey: z.string().min(1).default("dev-api-key"),
   corsOrigins: z.array(z.string().min(1)).default(["*"]),
   /** Path used to persist agent snapshots between restarts. Empty disables persistence. */
-  persistencePath: z.string().default(""),
+  persistencePath: z.string().default(".data/agents.json"),
   /** whisper.cpp CLI executable used by /api/transcribe. */
   whisperCppBin: z.string().trim().min(1).default("whisper-cli"),
   /** ggml model path. Empty disables voice transcription. */

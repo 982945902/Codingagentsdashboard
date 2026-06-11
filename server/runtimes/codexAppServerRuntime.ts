@@ -1,4 +1,4 @@
-import type { AgentCommandRequest, RuntimeKind } from "../../src/shared/contracts";
+import type { AgentCommandRequest, AgentSnapshot, RuntimeKind } from "../../src/shared/contracts";
 import { resolveWorkspacePath } from "./paths";
 import type {
   AgentRuntime,
@@ -244,6 +244,10 @@ export class CodexAppServerRuntime implements AgentRuntime {
       this.options.onError?.(new Error(`codex turn/start failed: ${msg}`));
       this.currentTurn = null;
     }
+  }
+
+  configure(agent: AgentSnapshot): void {
+    this.model = agent.model || null;
   }
 
   async stop(): Promise<void> {

@@ -22,11 +22,20 @@ export interface SupervisorOptions {
 }
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
+const MAX_ATTACHMENT_CONTENT_CHARS = 262_144;
 
 interface PendingApproval {
   resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
 }
+
+type DashboardSlashCommand =
+  | { kind: "clear"; raw: string }
+  | { kind: "model"; raw: string; value: string }
+  | { kind: "dir"; raw: string; value: string }
+  | { kind: "resume"; raw: string; value: string }
+  | { kind: "new-session"; raw: string }
+  | { kind: "error"; raw: string; message: string };
 
 export class AgentSupervisor {
   private readonly runtimes = new Map<string, AgentRuntime>();
@@ -58,6 +67,12 @@ export class AgentSupervisor {
   }
 
   async startAgent(agentId: string): Promise<AgentEvent[]> {
+    const events = await this.startAgentInternal(agentId);
+    this.broadcast(events);
+    return events;
+  }
+
+  private async startAgentInternal(agentId: string): Promise<AgentEvent[]> {
     const agent = this.store.get(agentId);
     if (!agent) return [agentEvent(agentId, "error", "Agent not found")];
 
@@ -66,7 +81,6 @@ export class AgentSupervisor {
       const events = updated
       ? [agentEvent(agentId, "updated", "Agent updated", updated)]
         : [];
-      this.broadcast(events);
       return events;
     }
 
@@ -83,6 +97,10 @@ export class AgentSupervisor {
     try {
       await runtime.start(this.buildStartOptions(agentId, updated ?? agent));
       events.push(...this.drainEvents(agentId));
+      pushAgentUpdated(
+        events,
+        this.store.update(agentId, { status: "running", currentTask: null }),
+      );
     } catch (error) {
       this.runtimes.delete(agentId);
       const message = error instanceof Error ? error.message : String(error);
@@ -95,7 +113,6 @@ export class AgentSupervisor {
       events.push(agentEvent(agentId, "error", message, failed));
     }
 
-    this.broadcast(events);
     return events;
   }
 
@@ -110,13 +127,6 @@ export class AgentSupervisor {
       return events;
     }
 
-    const runtime = this.runtimes.get(agentId);
-    if (!runtime) {
-      const events = [agentEvent(agentId, "error", "Agent is not running")];
-      this.broadcast(events);
-      return events;
-    }
-
     const command = request.command.trim();
     if (!command) {
       const events = [agentEvent(agentId, "error", "Command is required")];
@@ -124,13 +134,28 @@ export class AgentSupervisor {
       return events;
     }
 
+    const slash = parseDashboardSlashCommand(command);
+    if (slash) {
+      const events = await this.handleDashboardSlashCommand(agentId, slash);
+      this.broadcast(events);
+      return events;
+    }
+
+    const runtime = this.runtimes.get(agentId);
+    if (!runtime) {
+      const events = [agentEvent(agentId, "error", "Agent is not running")];
+      this.broadcast(events);
+      return events;
+    }
+
+    const runtimeCommand = buildRuntimeCommand(command, request.attachments ?? []);
     const events: AgentEvent[] = [agentEvent(agentId, "command", command)];
 
     // Record the user message in the structured chat history immediately.
     const userMessage: AgentMessage = {
       id: `msg-${crypto.randomUUID()}`,
       role: "user",
-      content: command,
+      content: runtimeCommand,
       format: "text",
       streaming: false,
       toolCalls: [],
@@ -140,13 +165,13 @@ export class AgentSupervisor {
     pushAgentUpdated(events, withUser);
 
     const updated = this.store.update(agentId, {
-      status: "running",
+      status: "busy",
       currentTask: command,
     });
     pushAgentUpdated(events, updated);
 
     try {
-      await runtime.send({ ...request, command });
+      await runtime.send({ ...request, command: runtimeCommand });
       events.push(...this.drainEvents(agentId));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -162,6 +187,65 @@ export class AgentSupervisor {
 
     this.broadcast(events);
     return events;
+  }
+
+  private async handleDashboardSlashCommand(
+    agentId: string,
+    slash: DashboardSlashCommand,
+  ): Promise<AgentEvent[]> {
+    const events: AgentEvent[] = [agentEvent(agentId, "command", slash.raw)];
+
+    if (slash.kind === "error") {
+      events.push(agentEvent(agentId, "error", slash.message));
+      return events;
+    }
+
+    if (slash.kind === "clear") {
+      pushLogEvent(events, this.store, agentId, "[slash] local logs cleared");
+      return events;
+    }
+
+    if (slash.kind === "model") {
+      const updated = this.store.update(agentId, { model: slash.value });
+      pushAgentUpdated(events, updated);
+      if (updated) this.runtimes.get(agentId)?.configure?.(updated);
+      pushLogEvent(events, this.store, agentId, `[slash] model set to ${slash.value}`);
+      return events;
+    }
+
+    const wasRunning = await this.stopRuntimeForRestart(agentId, events);
+    const patch: Partial<AgentSnapshot> =
+      slash.kind === "dir"
+        ? { workspacePath: slash.value }
+        : slash.kind === "resume"
+          ? { sessionId: slash.value }
+          : { sessionId: null };
+    const updated = this.store.update(agentId, patch);
+    pushAgentUpdated(events, updated);
+
+    const message =
+      slash.kind === "dir"
+        ? `[slash] workspace path set to ${slash.value}`
+        : slash.kind === "resume"
+          ? `[slash] session id set to ${slash.value}`
+          : "[slash] session id cleared";
+    pushLogEvent(events, this.store, agentId, message);
+
+    if (wasRunning) {
+      events.push(...(await this.startAgentInternal(agentId)));
+    }
+
+    return events;
+  }
+
+  private async stopRuntimeForRestart(agentId: string, events: AgentEvent[]): Promise<boolean> {
+    const runtime = this.runtimes.get(agentId);
+    if (!runtime) return false;
+    this.settleAllApprovals(agentId, "deny");
+    await runtime.stop();
+    this.runtimes.delete(agentId);
+    events.push(...this.drainEvents(agentId));
+    return true;
   }
 
   async stopAgent(agentId: string): Promise<AgentEvent[]> {
@@ -187,6 +271,40 @@ export class AgentSupervisor {
       currentTask: null,
     });
     pushAgentUpdated(events, updated);
+    this.broadcast(events);
+    return events;
+  }
+
+  async pauseAgent(agentId: string): Promise<AgentEvent[]> {
+    const agent = this.store.get(agentId);
+    if (!agent) {
+      const events = [agentEvent(agentId, "error", "Agent not found")];
+      this.broadcast(events);
+      return events;
+    }
+
+    const events: AgentEvent[] = [];
+    await this.stopRuntimeForRestart(agentId, events);
+    const updated = this.store.update(agentId, {
+      status: "paused",
+      currentTask: null,
+    });
+    pushAgentUpdated(events, updated);
+    this.broadcast(events);
+    return events;
+  }
+
+  async restartAgent(agentId: string): Promise<AgentEvent[]> {
+    const agent = this.store.get(agentId);
+    if (!agent) {
+      const events = [agentEvent(agentId, "error", "Agent not found")];
+      this.broadcast(events);
+      return events;
+    }
+
+    const events: AgentEvent[] = [];
+    await this.stopRuntimeForRestart(agentId, events);
+    events.push(...(await this.startAgentInternal(agentId)));
     this.broadcast(events);
     return events;
   }
@@ -411,9 +529,16 @@ export class AgentSupervisor {
         this.bufferAgentUpdated(agentId, updated);
       },
       onTurnComplete: () => {
-        const updated = this.store.recordApiCall(agentId, "success");
-        this.bufferAgentUpdated(agentId, updated);
-        this.bufferEvent(agentId, agentEvent(agentId, "turnComplete", "turn complete", updated));
+        const recorded = this.store.recordApiCall(agentId, "success");
+        const updated = recorded
+          ? this.store.update(agentId, {
+              status: "running",
+              currentTask: null,
+              tasksCompleted: recorded.tasksCompleted + 1,
+            })
+          : undefined;
+        this.bufferAgentUpdated(agentId, updated ?? recorded);
+        this.bufferEvent(agentId, agentEvent(agentId, "turnComplete", "turn complete", updated ?? recorded));
       },
       onApprovalRequest: (req: RuntimeApprovalRequest) => this.registerApproval(agentId, req),
     };
@@ -489,6 +614,63 @@ function agentEvent(
     payload,
     createdAt: new Date().toISOString(),
   };
+}
+
+function parseDashboardSlashCommand(command: string): DashboardSlashCommand | null {
+  if (!command.startsWith("/")) return null;
+  const [name = "", ...rest] = command.split(/\s+/);
+  const value = rest.join(" ").trim();
+
+  switch (name) {
+    case "/clear":
+      return { kind: "clear", raw: command };
+    case "/model":
+      return value
+        ? { kind: "model", raw: command, value }
+        : { kind: "error", raw: command, message: "Usage: /model <name>" };
+    case "/dir":
+      return value
+        ? { kind: "dir", raw: command, value }
+        : { kind: "error", raw: command, message: "Usage: /dir <path>" };
+    case "/resume":
+      return value
+        ? { kind: "resume", raw: command, value }
+        : { kind: "error", raw: command, message: "Usage: /resume <sessionId>" };
+    case "/new-session":
+      return { kind: "new-session", raw: command };
+    default:
+      return null;
+  }
+}
+
+function buildRuntimeCommand(
+  command: string,
+  attachments: NonNullable<AgentCommandRequest["attachments"]>,
+): string {
+  if (attachments.length === 0) return command;
+  const rendered = attachments.map((attachment, index) => {
+    const content = attachment.content
+      ? attachment.content.slice(0, MAX_ATTACHMENT_CONTENT_CHARS)
+      : "[content not provided]";
+    const truncated =
+      attachment.content && attachment.content.length > MAX_ATTACHMENT_CONTENT_CHARS
+        ? "\n[truncated by server]"
+        : "";
+    return [
+      `Attachment ${index + 1}: ${attachment.name}`,
+      `MIME: ${attachment.mimeType}`,
+      `Size: ${attachment.size} bytes`,
+      `Encoding: ${attachment.encoding ?? "metadata-only"}`,
+      "Content:",
+      content + truncated,
+    ].join("\n");
+  });
+  return [
+    command,
+    "",
+    "Attached files are provided below. Use their contents as part of the user's request.",
+    ...rendered,
+  ].join("\n");
 }
 
 function appendMessage(

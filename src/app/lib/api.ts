@@ -21,7 +21,13 @@ export interface CreateAgentRequest {
 
 export interface CommandPayload {
   command: string;
-  attachments?: Array<{ name: string; size: number; mimeType: string }>;
+  attachments?: Array<{
+    name: string;
+    size: number;
+    mimeType: string;
+    encoding?: "text" | "base64";
+    content?: string;
+  }>;
 }
 
 export interface TranscriptionResponse {
@@ -32,7 +38,7 @@ export interface AgentSnapshot {
   id: string;
   name: string;
   runtimeKind: RuntimeKind;
-  status: "running" | "idle" | "error" | "stopped";
+  status: "idle" | "running" | "busy" | "paused" | "stopped" | "error";
   currentTask: string | null;
   uptime: string;
   tasksCompleted: number;
@@ -102,6 +108,18 @@ export function startAgent(config: ApiConfig, agentId: string) {
 
 export function stopAgent(config: ApiConfig, agentId: string) {
   return requestJson<{ ok: true }>(config, `/api/agents/${encodeURIComponent(agentId)}/stop`, {
+    method: "POST",
+  });
+}
+
+export function pauseAgent(config: ApiConfig, agentId: string) {
+  return requestJson<{ ok: true }>(config, `/api/agents/${encodeURIComponent(agentId)}/pause`, {
+    method: "POST",
+  });
+}
+
+export function restartAgent(config: ApiConfig, agentId: string) {
+  return requestJson<{ ok: true }>(config, `/api/agents/${encodeURIComponent(agentId)}/restart`, {
     method: "POST",
   });
 }

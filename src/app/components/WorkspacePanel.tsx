@@ -40,8 +40,10 @@ interface WorkspacePanelProps {
     agentId: string,
     command: string,
     attachments?: AgentCommandAttachment[],
-  ) => string[];
+  ) => string[] | Promise<string[]>;
   onStartAgent?: (agentId: string) => void;
+  onPauseAgent?: (agentId: string) => void;
+  onRestartAgent?: (agentId: string) => void;
   onStopAgent?: (agentId: string) => void;
   allAgents?: Agent[];
   pendingApprovals?: PendingApproval[];
@@ -59,6 +61,40 @@ const AUDIO_MIME_PREFERENCES = [
   "audio/mp4",
   "audio/webm;codecs=opus",
 ];
+const MAX_ATTACHMENT_BYTES = 262_144;
+const TEXT_ATTACHMENT_EXTENSIONS = new Set([".txt", ".json", ".log", ".md", ".csv", ".tsv"]);
+
+async function readAttachment(file: File): Promise<AgentCommandAttachment> {
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`${file.name} is larger than ${Math.round(MAX_ATTACHMENT_BYTES / 1024)} KB`);
+  }
+  const mimeType = file.type || "application/octet-stream";
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const isText =
+    mimeType.startsWith("text/") ||
+    mimeType === "application/json" ||
+    TEXT_ATTACHMENT_EXTENSIONS.has(file.name.slice(file.name.lastIndexOf(".")).toLowerCase());
+
+  if (isText) {
+    return {
+      name: file.name,
+      size: file.size,
+      mimeType,
+      encoding: "text",
+      content: new TextDecoder().decode(bytes),
+    };
+  }
+
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return {
+    name: file.name,
+    size: file.size,
+    mimeType,
+    encoding: "base64",
+    content: btoa(binary),
+  };
+}
 
 export function chooseAudioMimeType(): string | undefined {
   if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) {
@@ -74,6 +110,8 @@ export function WorkspacePanel({
   onBack,
   onSendCommand,
   onStartAgent,
+  onPauseAgent,
+  onRestartAgent,
   onStopAgent,
   allAgents = [],
   pendingApprovals = [],
@@ -101,6 +139,7 @@ export function WorkspacePanel({
     { name: "/resume", hint: "/resume <sessionId>", description: "Ask the runtime to resume a previous CLI session id." },
     { name: "/model", hint: "/model <name>", description: "Switch the model used by the agent for the next turn." },
     { name: "/dir", hint: "/dir <path>", description: "Change the working directory the runtime operates in." },
+    { name: "/new-session", hint: "Clear saved session id", description: "Start a fresh runtime session on the next start/restart." },
   ] as const;
 
   const paletteSuggestions = command.startsWith("/")
@@ -114,7 +153,7 @@ export function WorkspacePanel({
     return num.toString();
   };
 
-  const handleSendCommand = (commandOverride?: string) => {
+  const handleSendCommand = async (commandOverride?: string) => {
     const commandText = commandOverride ?? command;
     if (!commandText.trim() && attachedFiles.length === 0) return;
 
@@ -129,16 +168,19 @@ export function WorkspacePanel({
     const fileInfo = attachedFiles.length > 0
       ? ` [${attachedFiles.length} file(s) attached]`
       : '';
-    const attachments = attachedFiles.map((file) => ({
-      name: file.name,
-      size: file.size,
-      mimeType: file.type || "application/octet-stream",
-    }));
-    const responseLines = onSendCommand(
-      agent.id,
-      commandText,
-      attachments,
-    );
+    let attachments: AgentCommandAttachment[];
+    try {
+      attachments = await Promise.all(attachedFiles.map(readAttachment));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        `$ ${commandText || "attachments"}${fileInfo}`,
+        `> Attachment error: ${message}`,
+      ]);
+      return;
+    }
+    const responseLines = await onSendCommand(agent.id, commandText, attachments);
 
     setTerminalHistory((currentHistory) => [
       ...currentHistory,
@@ -168,6 +210,26 @@ export function WorkspacePanel({
         ...currentHistory,
         "$ stop",
         `> Stopping ${agent.name}`,
+      ]);
+      return;
+    }
+
+    if (action === "pause" && onPauseAgent) {
+      onPauseAgent(agent.id);
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        "$ pause",
+        `> Pausing ${agent.name}`,
+      ]);
+      return;
+    }
+
+    if (action === "restart" && onRestartAgent) {
+      onRestartAgent(agent.id);
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        "$ restart",
+        `> Restarting ${agent.name}`,
       ]);
       return;
     }
@@ -286,6 +348,10 @@ export function WorkspacePanel({
     switch (status) {
       case "running":
         return "bg-status-running";
+      case "busy":
+        return "bg-status-busy";
+      case "paused":
+        return "bg-status-paused";
       case "error":
         return "bg-status-error";
       case "idle":

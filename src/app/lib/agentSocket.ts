@@ -4,6 +4,8 @@ export interface AgentCommandAttachment {
   name: string;
   size: number;
   mimeType: string;
+  encoding?: "text" | "base64";
+  content?: string;
 }
 
 export interface AgentCommandRequest {
@@ -78,6 +80,8 @@ export type SocketState = "connecting" | "connected" | "closed" | "error";
 export interface AgentSocket {
   sendCommand(agentId: string, payload: AgentCommandRequest): void;
   startAgent(agentId: string): void;
+  pauseAgent(agentId: string): void;
+  restartAgent(agentId: string): void;
   stopAgent(agentId: string): void;
   respondToApproval(agentId: string, approvalId: string, decision: ApprovalDecision): void;
   close(): void;
@@ -144,6 +148,12 @@ export function openAgentSocket(
     },
     startAgent(agentId) {
       send({ type: "agent.start", agentId });
+    },
+    pauseAgent(agentId) {
+      send({ type: "agent.pause", agentId });
+    },
+    restartAgent(agentId) {
+      send({ type: "agent.restart", agentId });
     },
     stopAgent(agentId) {
       send({ type: "agent.stop", agentId });

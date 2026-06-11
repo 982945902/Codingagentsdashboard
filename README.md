@@ -27,8 +27,8 @@ Bun.serve  ──►  AgentSupervisor  ──►  Runtime
 ### Codex/Claude session 复用
 
 - `CodexAppServerRuntime` 启动长驻 `codex app-server` 子进程，通过 JSON-RPC 创建/恢复 thread 并发送 turn；解析 message/tool/usage/approval 事件，保持同一进程内上下文。
-- `ClaudeCliRuntime` 使用 `claude -p --output-format stream-json --input-format stream-json` 并把 prompt 作为 user message 写入 stdin；解析 system / assistant content blocks / tool_use / tool_result / result / done 事件。
-- 两个 runtime 都会从输出中抓 session id（codex: `session_id` 字段；claude: `session.id`），自动写回 `AgentSnapshot.sessionId` 并持久化（若设置了 `PERSISTENCE_PATH`），后续 send 自动 resume。
+- `ClaudeCliRuntime` 使用 `claude -p <prompt> --output-format stream-json --verbose` 执行单 turn；解析 system / assistant content blocks / tool_use / tool_result / result / done 事件。
+- 每个 dashboard agent 与一个底层 Coding CLI session/thread 一对一绑定：runtime 捕获 session id（codex: thread id；claude: `session.id`）后写回 `AgentSnapshot.sessionId`，默认持久化到 `.data/agents.json`，后续 start/send 会 resume 同一个 session。
 - 也可以通过 REST `POST /api/agents` 时显式传 `sessionId` / `runtimeArgs` 来手动接管。
 - Codex runtime 的 command/patch approval 会通过 WebSocket 发给前端，用户可 Allow/Deny；无人响应时后端 60s 后自动 allow，避免 runtime 卡死。
 
@@ -81,11 +81,11 @@ pnpm dev:full
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | 监听地址 |
+| `HOST` | `127.0.0.1` | 监听地址；非 loopback 地址必须显式设置非默认 `API_KEY` |
 | `PORT` | `8787` | 监听端口 |
-| `API_KEY` | `dev-api-key` | 客户端通过 `x-api-key` 头或 `?apiKey=` 查询参数携带 |
+| `API_KEY` | `dev-api-key` | 客户端通过 `x-api-key` 头或 `?apiKey=` 查询参数携带；只适合本地 loopback 使用 |
 | `CORS_ORIGINS` | `*` | 逗号分隔的允许来源 |
-| `PERSISTENCE_PATH` | (空) | 设置后将 agent 快照写入 JSON 文件，重启后自动恢复 |
+| `PERSISTENCE_PATH` | `.data/agents.json` | agent 快照持久化路径；设为空字符串可禁用持久化 |
 | `WHISPER_CPP_BIN` | `whisper-cli` | whisper.cpp CLI 可执行文件 |
 | `WHISPER_CPP_MODEL` | (空) | ggml 模型路径；为空时禁用语音转录并返回 503 |
 | `WHISPER_LANGUAGE` | `auto` | 转录语言，`auto` 表示自动检测 |
@@ -125,8 +125,10 @@ pnpm dev:full
 ## 前端使用
 
 - **看板**：`KanbanBoard` 以 status 分列展示所有 agent，支持 **+ New Agent** 对话框（runtimeKind / workspacePath / model / sessionId / runtimeArgs）和卡片悬停删除按钮。
-- **工作区**：`WorkspacePanel` 顶部为状态条 + Quick Actions（start/pause/restart/stop），中部 Chat 卡片流（user 右对齐，assistant 左对齐 + Markdown，streaming 显示光标，工具调用以子卡片展示 status / input / output），底部为可折叠 Logs 区。
-- **Slash 命令**：输入框输入 `/` 弹出 palette，内置 `/clear`（本地清 logs）、`/resume <id>` / `/model <name>` / `/dir <path>`（发送给 runtime）。`↑/↓` 选择，`Tab` 或 `Enter`（无空格）补全，`Esc` 清空。
+- **状态机**：`idle` 表示已创建未启动，`running` 表示 runtime 在线空闲，`busy` 表示 turn 执行中，`paused` 表示 runtime 已停但 session 保留，`stopped` 表示用户停止，`error` 表示启动/执行失败。
+- **工作区**：`WorkspacePanel` 顶部为状态条 + Quick Actions（start/pause/restart/stop）。`pause` 会停止 runtime 并保留 session，`restart` 会按同一 agent/session 停后重启；中部 Chat 卡片流（user 右对齐，assistant 左对齐 + Markdown，streaming 显示光标，工具调用以子卡片展示 status / input / output），底部为可折叠 Logs 区。
+- **附件**：发送命令时会读取附件内容并拼入 runtime prompt；单文件上限 256KB，文本/JSON/log/Markdown/CSV 按 UTF-8 传原文，图片/PDF 等二进制按 base64 传递。
+- **Slash 命令**：输入框输入 `/` 弹出 palette。`/clear` 清本地 logs 视图；`/model <name>` 更新 agent model 并对 Codex 下一 turn 生效；`/resume <id>` 更新 `sessionId` 并在运行中自动重启 runtime；`/dir <path>` 更新工作目录并在运行中自动重启 runtime；`/new-session` 清空 `sessionId` 并在运行中自动重启到新 session。`↑/↓` 选择，`Tab` 或 `Enter`（无空格）补全，`Esc` 清空。
 
 ## 测试与构建
 

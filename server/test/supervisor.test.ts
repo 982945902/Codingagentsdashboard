@@ -164,6 +164,7 @@ describe("agent supervisor", () => {
     expect(events.map((event) => event.type)).toEqual([
       "updated",
       "log",
+      "updated",
     ]);
   });
 
@@ -182,6 +183,7 @@ describe("agent supervisor", () => {
     const events = await supervisor.sendCommand(agent.id, { command: "status" });
 
     expect(runtime.sentCommands).toEqual(["status"]);
+    expect(store.get(agent.id)?.status).toBe("busy");
     expect(store.get(agent.id)?.currentTask).toBe("status");
     expect(store.get(agent.id)?.logs.at(-1)).toContain("echo status");
     // The user message must be persisted in the structured chat history.
@@ -214,6 +216,54 @@ describe("agent supervisor", () => {
     expect(runtime.stopped).toBe(true);
     expect(store.get(agent.id)?.status).toBe("stopped");
     expect(events.at(-1)?.type).toBe("updated");
+  });
+
+  it("pauses a running agent without clearing its session binding", async () => {
+    const store = createAgentStore([]);
+    const agent = store.create({
+      name: "Pause Worker",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/pause-worker",
+      model: "codex",
+      sessionId: "sess-pause",
+    });
+    const runtime = new RecordingRuntime();
+    const supervisor = new AgentSupervisor(store, () => runtime);
+
+    await supervisor.startAgent(agent.id);
+    const events = await supervisor.pauseAgent(agent.id);
+
+    expect(runtime.stopped).toBe(true);
+    expect(store.get(agent.id)?.status).toBe("paused");
+    expect(store.get(agent.id)?.sessionId).toBe("sess-pause");
+    expect(events.at(-1)?.snapshot?.status).toBe("paused");
+  });
+
+  it("restarts an agent on the same session", async () => {
+    const store = createAgentStore([]);
+    const agent = store.create({
+      name: "Restart Worker",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/restart-worker",
+      model: "codex",
+      sessionId: "sess-restart",
+    });
+    const runtimes: RecordingRuntime[] = [];
+    const supervisor = new AgentSupervisor(store, () => {
+      const runtime = new RecordingRuntime();
+      runtimes.push(runtime);
+      return runtime;
+    });
+
+    await supervisor.startAgent(agent.id);
+    const events = await supervisor.restartAgent(agent.id);
+
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[0]?.stopped).toBe(true);
+    expect(runtimes[1]?.started).toBe(true);
+    expect(store.get(agent.id)?.status).toBe("running");
+    expect(store.get(agent.id)?.sessionId).toBe("sess-restart");
+    expect(events.at(-1)?.snapshot?.status).toBe("running");
   });
 
   it("returns command errors for missing or stopped agents", async () => {
@@ -265,6 +315,54 @@ describe("agent supervisor", () => {
 
     expect(store.get(agent.id)?.sessionId).toBe("sess-abc-123");
     expect(store.get(agent.id)?.logs.some((line) => line.includes("sess-abc-123"))).toBe(true);
+  });
+
+  it("handles dashboard slash commands as native agent configuration", async () => {
+    const store = createAgentStore([]);
+    const agent = store.create({
+      name: "Configurable Worker",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/configurable-worker",
+      model: "codex",
+    });
+    const runtime = new RecordingRuntime();
+    const supervisor = new AgentSupervisor(store, () => runtime);
+
+    const events = await supervisor.sendCommand(agent.id, { command: "/model gpt-5.1-codex" });
+
+    expect(runtime.sentCommands).toEqual([]);
+    expect(store.get(agent.id)?.model).toBe("gpt-5.1-codex");
+    expect(store.get(agent.id)?.logs.at(-1)).toContain("model set to gpt-5.1-codex");
+    expect(events.map((event) => event.type)).toContain("updated");
+  });
+
+  it("restarts running agents for slash commands that change session or workspace", async () => {
+    const store = createAgentStore([]);
+    const agent = store.create({
+      name: "Restartable Worker",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/restartable-worker",
+      model: "codex",
+      sessionId: "old-session",
+    });
+    const runtimes: RecordingRuntime[] = [];
+    const supervisor = new AgentSupervisor(store, () => {
+      const runtime = new RecordingRuntime();
+      runtimes.push(runtime);
+      return runtime;
+    });
+
+    await supervisor.startAgent(agent.id);
+    await supervisor.sendCommand(agent.id, { command: "/resume new-session" });
+    await supervisor.sendCommand(agent.id, { command: "/dir /tmp/new-workspace" });
+    await supervisor.sendCommand(agent.id, { command: "/new-session" });
+
+    expect(runtimes).toHaveLength(4);
+    expect(runtimes.slice(0, 3).every((runtime) => runtime.stopped)).toBe(true);
+    expect(runtimes.every((runtime) => runtime.sentCommands.length === 0)).toBe(true);
+    expect(store.get(agent.id)?.status).toBe("running");
+    expect(store.get(agent.id)?.sessionId).toBe(null);
+    expect(store.get(agent.id)?.workspacePath).toBe("/tmp/new-workspace");
   });
 
   it("deletes agents and stops their runtime", async () => {
@@ -366,8 +464,42 @@ describe("agent supervisor", () => {
     // cacheRead / (input + cacheRead) = 600 / 800
     expect(snapshot?.cacheHitRate).toBe(75);
     expect(snapshot?.apiCalls).toEqual({ total: 2, success: 2, errors: 0 });
+    expect(snapshot?.status).toBe("running");
+    expect(snapshot?.currentTask).toBe(null);
+    expect(snapshot?.tasksCompleted).toBe(2);
     // No real basis was reported, so contextUsage stays at 0.
     expect(snapshot?.contextUsage).toBe(0);
+  });
+
+  it("passes attachment content to the runtime prompt", async () => {
+    const store = createAgentStore([]);
+    const agent = store.create({
+      name: "Attachment Worker",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/attachment-worker",
+      model: "codex",
+    });
+    const runtime = new RecordingRuntime();
+    const supervisor = new AgentSupervisor(store, () => runtime);
+
+    await supervisor.startAgent(agent.id);
+    await supervisor.sendCommand(agent.id, {
+      command: "summarize",
+      attachments: [
+        {
+          name: "notes.txt",
+          size: 11,
+          mimeType: "text/plain",
+          encoding: "text",
+          content: "hello world",
+        },
+      ],
+    });
+
+    expect(runtime.sentCommands[0]).toContain("summarize");
+    expect(runtime.sentCommands[0]).toContain("notes.txt");
+    expect(runtime.sentCommands[0]).toContain("hello world");
+    expect(store.get(agent.id)?.messages.at(-1)?.content).toContain("notes.txt");
   });
 
   it("broadcasts updated snapshots when usage arrives", async () => {

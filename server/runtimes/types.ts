@@ -96,6 +96,8 @@ export interface AgentRuntime {
   readonly kind: RuntimeKind;
   readonly command?: string;
   start(options: RuntimeStartOptions): Promise<void>;
+  /** Apply mutable agent settings that can take effect without restarting the runtime. */
+  configure?(agent: AgentSnapshot): void;
   send(request: AgentCommandRequest | string): Promise<void>;
   stop(): Promise<void>;
 }

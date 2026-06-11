@@ -49,6 +49,10 @@ export function KanbanBoard({
     switch (status) {
       case "running":
         return "bg-status-running";
+      case "busy":
+        return "bg-status-busy";
+      case "paused":
+        return "bg-status-paused";
       case "error":
         return "bg-status-error";
       case "idle":
@@ -62,6 +66,10 @@ export function KanbanBoard({
     switch (status) {
       case "running":
         return "bg-status-running/20";
+      case "busy":
+        return "bg-status-busy/20";
+      case "paused":
+        return "bg-status-paused/20";
       case "error":
         return "bg-status-error/20";
       case "idle":

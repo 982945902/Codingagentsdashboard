@@ -224,6 +224,37 @@ describe("Bun HTTP app", () => {
     expect(body.agent.runtimeKind).toBe("codex");
   });
 
+  it("persists agent snapshots through default app settings", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-http-default-persist-"));
+    tempDirs.push(dir);
+    const path = join(dir, ".data", "agents.json");
+    const settings = {
+      apiKey,
+      corsOrigins: ["*"],
+      host: "127.0.0.1",
+      port: 0,
+      persistencePath: path,
+      whisperCppBin: "whisper-cli",
+      whisperCppModel: "",
+      whisperLanguage: "auto",
+      ffmpegBin: "ffmpeg",
+    };
+    const initial = createApp({ settings });
+    initial.store.create({
+      name: "Persistent Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/persistent-agent",
+      model: "codex",
+      sessionId: "codex-thread-one-to-one",
+    });
+
+    const restored = createApp({ settings });
+
+    expect(existsSync(path)).toBe(true);
+    expect(restored.store.list()).toHaveLength(1);
+    expect(restored.store.list()[0]?.sessionId).toBe("codex-thread-one-to-one");
+  });
+
   it("starts, sends commands to, and stops agents through REST", async () => {
     const { baseUrl, app } = startTestServer(true);
     const agent = app.store.create({
@@ -258,6 +289,32 @@ describe("Bun HTTP app", () => {
     const detail = await fetch(`${baseUrl}/api/agents/${agent.id}`, authed());
     const body = await detail.json();
     expect(body.agent.status).toBe("stopped");
+  });
+
+  it("pauses and restarts agents through REST", async () => {
+    const { baseUrl, app } = startTestServer(true);
+    const agent = app.store.create({
+      name: "Lifecycle Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/lifecycle-agent",
+      model: "codex",
+      sessionId: "rest-session",
+    });
+
+    expect(
+      await fetch(`${baseUrl}/api/agents/${agent.id}/start`, authed({ method: "POST" })),
+    ).toHaveProperty("status", 200);
+    expect(
+      await fetch(`${baseUrl}/api/agents/${agent.id}/pause`, authed({ method: "POST" })),
+    ).toHaveProperty("status", 200);
+    expect(app.store.get(agent.id)?.status).toBe("paused");
+    expect(app.store.get(agent.id)?.sessionId).toBe("rest-session");
+
+    expect(
+      await fetch(`${baseUrl}/api/agents/${agent.id}/restart`, authed({ method: "POST" })),
+    ).toHaveProperty("status", 200);
+    expect(app.store.get(agent.id)?.status).toBe("running");
+    expect(app.store.get(agent.id)?.sessionId).toBe("rest-session");
   });
 
   it("rejects commands when the agent is not running", async () => {
