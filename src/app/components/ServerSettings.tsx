@@ -3,18 +3,55 @@ import { X, Server, Key, Lock, Save } from "lucide-react";
 
 interface ServerSettingsProps {
   onClose: () => void;
+  onSaved: (settings: StoredServerSettings) => void;
 }
 
-export function ServerSettings({ onClose }: ServerSettingsProps) {
-  const [serverUrl, setServerUrl] = useState("https://your-server.com:8080");
-  const [apiKey, setApiKey] = useState("");
-  const [sshKey, setSshKey] = useState("");
-  const [autoConnect, setAutoConnect] = useState(true);
+export interface StoredServerSettings {
+  serverUrl: string;
+  apiKey: string;
+  sshKey: string;
+  autoConnect: boolean;
+}
+
+const SETTINGS_KEY = "coding-agents-dashboard:server-settings";
+const defaultSettings: StoredServerSettings = {
+  serverUrl: "",
+  apiKey: "",
+  sshKey: "",
+  autoConnect: true,
+};
+
+function loadSettings() {
+  try {
+    const stored = window.localStorage.getItem(SETTINGS_KEY);
+    return stored
+      ? { ...defaultSettings, ...(JSON.parse(stored) as Partial<StoredServerSettings>) }
+      : defaultSettings;
+  } catch {
+    return defaultSettings;
+  }
+}
+
+export function ServerSettings({ onClose, onSaved }: ServerSettingsProps) {
+  const [settings, setSettings] = useState<StoredServerSettings>(() => loadSettings());
+  const [connectionStatus, setConnectionStatus] = useState<
+    "idle" | "ready" | "invalid"
+  >("idle");
 
   const handleSave = () => {
-    console.log("Saving settings:", { serverUrl, apiKey, sshKey, autoConnect });
-    // Save to localStorage or API
-    onClose();
+    const savedSettings = {
+      ...settings,
+      serverUrl: settings.serverUrl.trim(),
+      apiKey: settings.apiKey.trim(),
+    };
+
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(savedSettings));
+    onSaved(savedSettings);
+  };
+
+  const handleTestConnection = () => {
+    const hasValidUrl = /^https?:\/\/.+/i.test(settings.serverUrl.trim());
+    setConnectionStatus(hasValidUrl && settings.apiKey.trim() ? "ready" : "invalid");
   };
 
   return (
@@ -41,8 +78,10 @@ export function ServerSettings({ onClose }: ServerSettingsProps) {
             </label>
             <input
               type="text"
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
+              value={settings.serverUrl}
+              onChange={(e) =>
+                setSettings((current) => ({ ...current, serverUrl: e.target.value }))
+              }
               placeholder="https://your-server.com:8080"
               className="w-full px-3 py-2 bg-input-background text-foreground rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring"
             />
@@ -59,8 +98,10 @@ export function ServerSettings({ onClose }: ServerSettingsProps) {
             </label>
             <input
               type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              value={settings.apiKey}
+              onChange={(e) =>
+                setSettings((current) => ({ ...current, apiKey: e.target.value }))
+              }
               placeholder="Enter your API key"
               className="w-full px-3 py-2 bg-input-background text-foreground rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring"
             />
@@ -76,8 +117,10 @@ export function ServerSettings({ onClose }: ServerSettingsProps) {
               SSH Key (Optional)
             </label>
             <textarea
-              value={sshKey}
-              onChange={(e) => setSshKey(e.target.value)}
+              value={settings.sshKey}
+              onChange={(e) =>
+                setSettings((current) => ({ ...current, sshKey: e.target.value }))
+              }
               placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
               rows={4}
               className="w-full px-3 py-2 bg-input-background text-foreground rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring font-mono resize-none text-sm"
@@ -96,14 +139,19 @@ export function ServerSettings({ onClose }: ServerSettingsProps) {
               </p>
             </div>
             <button
-              onClick={() => setAutoConnect(!autoConnect)}
+              onClick={() =>
+                setSettings((current) => ({
+                  ...current,
+                  autoConnect: !current.autoConnect,
+                }))
+              }
               className={`relative w-11 h-6 rounded-full transition-colors ${
-                autoConnect ? "bg-primary" : "bg-switch-background"
+                settings.autoConnect ? "bg-primary" : "bg-switch-background"
               }`}
             >
               <div
                 className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform ${
-                  autoConnect ? "translate-x-5.5" : "translate-x-0.5"
+                  settings.autoConnect ? "translate-x-[22px]" : "translate-x-0.5"
                 }`}
               />
             </button>
@@ -113,10 +161,27 @@ export function ServerSettings({ onClose }: ServerSettingsProps) {
           <div className="p-4 bg-card rounded-lg border border-border">
             <div className="text-muted-foreground mb-2">Connection Status</div>
             <div className="flex items-center gap-2 text-card-foreground">
-              <div className="w-2 h-2 rounded-full bg-status-stopped" />
-              <span>Not connected</span>
+              <div
+                className={`w-2 h-2 rounded-full ${
+                  connectionStatus === "ready"
+                    ? "bg-status-running"
+                    : connectionStatus === "invalid"
+                    ? "bg-status-error"
+                    : "bg-status-stopped"
+                }`}
+              />
+              <span>
+                {connectionStatus === "ready"
+                  ? "Configuration ready"
+                  : connectionStatus === "invalid"
+                  ? "Missing valid URL or API key"
+                  : "Not connected"}
+              </span>
             </div>
-            <button className="mt-3 w-full px-4 py-2 bg-secondary hover:bg-accent rounded-md transition-colors text-secondary-foreground border border-border">
+            <button
+              onClick={handleTestConnection}
+              className="mt-3 w-full px-4 py-2 bg-secondary hover:bg-accent rounded-md transition-colors text-secondary-foreground border border-border"
+            >
               Test Connection
             </button>
           </div>
