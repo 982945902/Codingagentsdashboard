@@ -144,6 +144,14 @@ export function KanbanBoard({
           </button>
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 lg:gap-4">
+          {agents.length === 0 && (
+            <div className="lg:col-span-2 rounded-lg border border-dashed border-border bg-card/60 p-6 text-center">
+              <div className="text-card-foreground mb-1">No agents connected yet</div>
+              <div className="text-sm text-muted-foreground">
+                Create a Codex or Claude agent to start collecting real runtime metrics.
+              </div>
+            </div>
+          )}
           {agents.map((agent) => (
             <div
               key={agent.id}
@@ -315,7 +323,7 @@ function CreateAgentDialog({
         <div>
           <h3 className="text-lg text-card-foreground">New Agent</h3>
           <p className="text-xs text-muted-foreground mt-1">
-            Spin up a real codex/claude session, or a deterministic mock for the UI.
+            Spin up a real Codex or Claude session in the selected workspace.
           </p>
         </div>
 
@@ -335,8 +343,7 @@ function CreateAgentDialog({
             onChange={(e) => setRuntimeKind(e.target.value as RuntimeKind)}
             className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm"
           >
-            <option value="mock">mock (deterministic stub)</option>
-            <option value="codex">codex (codex exec --json)</option>
+            <option value="codex">codex (codex app-server)</option>
             <option value="claude">claude (claude -p stream-json)</option>
           </select>
         </Field>

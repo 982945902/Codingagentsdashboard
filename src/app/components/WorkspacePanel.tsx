@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { Agent } from "../App";
-import type { AgentCommandAttachment } from "../lib/agentSocket";
+import type { AgentCommandAttachment, ApprovalDecision } from "../lib/agentSocket";
+import type { PendingApproval } from "../hooks/useAgents";
 import {
   Terminal,
   Activity,
@@ -29,6 +30,7 @@ import {
   History,
   Copy,
   ArrowRight,
+  ShieldAlert,
 } from "lucide-react";
 
 interface WorkspacePanelProps {
@@ -42,6 +44,29 @@ interface WorkspacePanelProps {
   onStartAgent?: (agentId: string) => void;
   onStopAgent?: (agentId: string) => void;
   allAgents?: Agent[];
+  pendingApprovals?: PendingApproval[];
+  onRespondToApproval?: (
+    agentId: string,
+    approvalId: string,
+    decision: ApprovalDecision,
+  ) => void;
+  onTranscribeAudio?: (audio: Blob) => Promise<string>;
+}
+
+const AUDIO_MIME_PREFERENCES = [
+  "audio/wav",
+  "audio/ogg;codecs=opus",
+  "audio/mp4",
+  "audio/webm;codecs=opus",
+];
+
+export function chooseAudioMimeType(): string | undefined {
+  if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) {
+    return undefined;
+  }
+  return AUDIO_MIME_PREFERENCES.find((mimeType) =>
+    MediaRecorder.isTypeSupported(mimeType),
+  );
 }
 
 export function WorkspacePanel({
@@ -51,17 +76,25 @@ export function WorkspacePanel({
   onStartAgent,
   onStopAgent,
   allAgents = [],
+  pendingApprovals = [],
+  onRespondToApproval,
+  onTranscribeAudio,
 }: WorkspacePanelProps) {
   const [command, setCommand] = useState("");
   const [terminalHistory, setTerminalHistory] = useState<string[]>([
     "$ Connection established",
   ]);
   const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [logsCollapsed, setLogsCollapsed] = useState(true);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   const SLASH_COMMANDS = [
     { name: "/clear", hint: "Clear local logs panel", description: "Clears the collapsible logs view (does not delete server history)." },
@@ -142,23 +175,100 @@ export function WorkspacePanel({
     handleSendCommand(action);
   };
 
-  const handleVoiceInput = () => {
-    setIsRecording(!isRecording);
+  const stopVoiceTracks = () => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  };
 
-    if (!isRecording) {
-      // Start recording
-      console.log("Starting voice recording...");
-      // TODO: Implement actual voice recording
-      // navigator.mediaDevices.getUserMedia({ audio: true })
+  const transcribeRecording = async (recorder: MediaRecorder) => {
+    setIsRecording(false);
+    stopVoiceTracks();
 
-      // Simulate voice input after 2 seconds
-      setTimeout(() => {
-        setCommand("Voice command recorded");
-        setIsRecording(false);
-      }, 2000);
-    } else {
-      // Stop recording
-      console.log("Stopping voice recording...");
+    const blob = new Blob(audioChunksRef.current, {
+      type: recorder.mimeType || chooseAudioMimeType() || "audio/webm",
+    });
+    audioChunksRef.current = [];
+    mediaRecorderRef.current = null;
+
+    if (!onTranscribeAudio) {
+      setVoiceStatus("Voice transcription is unavailable without a server connection.");
+      return;
+    }
+    if (blob.size === 0) {
+      setVoiceStatus("No voice audio was captured.");
+      return;
+    }
+
+    setIsTranscribing(true);
+    setVoiceStatus("Transcribing voice input...");
+    setTerminalHistory((currentHistory) => [
+      ...currentHistory,
+      "> Transcribing voice input on the server...",
+    ]);
+    try {
+      const text = (await onTranscribeAudio(blob)).trim();
+      if (!text) {
+        setVoiceStatus("No speech was detected.");
+        return;
+      }
+      setCommand((currentCommand) =>
+        currentCommand.trim() ? `${currentCommand.trim()} ${text}` : text,
+      );
+      setVoiceStatus("Voice transcript added.");
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        `> Voice transcript: ${text}`,
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setVoiceStatus(`Voice transcription failed: ${message}`);
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        `> Voice transcription failed: ${message}`,
+      ]);
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const handleVoiceInput = async () => {
+    if (isTranscribing) return;
+
+    if (isRecording) {
+      mediaRecorderRef.current?.stop();
+      setVoiceStatus("Stopping recording...");
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setVoiceStatus("Voice input is not supported in this browser.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = chooseAudioMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      audioChunksRef.current = [];
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        void transcribeRecording(recorder);
+      };
+      recorder.start();
+      setIsRecording(true);
+      setVoiceStatus("Recording... click the mic again to stop.");
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        "> Voice recording started",
+      ]);
+    } catch (error) {
+      stopVoiceTracks();
+      const message = error instanceof Error ? error.message : String(error);
+      setVoiceStatus(`Could not start recording: ${message}`);
     }
   };
 
@@ -194,6 +304,10 @@ export function WorkspacePanel({
 
   const totalTokens = agent.tokenUsage.input + agent.tokenUsage.output;
   const totalCacheTokens = agent.tokenUsage.cacheRead + agent.tokenUsage.cacheCreation;
+  const apiSuccessRate =
+    agent.apiCalls.total > 0
+      ? (agent.apiCalls.success / agent.apiCalls.total) * 100
+      : 0;
 
   return (
     <div className="size-full flex flex-col lg:flex-row bg-background overflow-hidden">
@@ -284,7 +398,7 @@ export function WorkspacePanel({
               <span className="text-xs text-muted-foreground">API:</span>
               <span className="text-sm text-card-foreground">{agent.apiCalls.total}</span>
               <span className="text-xs text-success">
-                ({((agent.apiCalls.success / agent.apiCalls.total) * 100).toFixed(0)}%)
+                ({apiSuccessRate.toFixed(0)}%)
               </span>
             </div>
 
@@ -442,6 +556,46 @@ export function WorkspacePanel({
             )}
           </div>
 
+          {/* Pending Approvals */}
+          {pendingApprovals.length > 0 && (
+            <div className="border-t border-border bg-card px-3 py-2 space-y-2">
+              {pendingApprovals.map((approval) => (
+                <div
+                  key={approval.approvalId}
+                  className="flex items-start gap-2.5 rounded-md border border-status-idle/40 bg-status-idle/10 px-3 py-2"
+                >
+                  <ShieldAlert className="w-4 h-4 text-status-idle shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Approval required · {approval.kind}
+                    </div>
+                    <div className="text-sm text-card-foreground break-words">
+                      {approval.summary}
+                    </div>
+                  </div>
+                  <div className="flex gap-1.5 shrink-0">
+                    <button
+                      onClick={() =>
+                        onRespondToApproval?.(agent.id, approval.approvalId, "allow")
+                      }
+                      className="px-2.5 py-1 text-xs bg-primary text-primary-foreground rounded hover:opacity-90 transition-opacity"
+                    >
+                      Allow
+                    </button>
+                    <button
+                      onClick={() =>
+                        onRespondToApproval?.(agent.id, approval.approvalId, "deny")
+                      }
+                      className="px-2.5 py-1 text-xs bg-secondary text-secondary-foreground border border-border rounded hover:bg-accent transition-colors"
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Command Input */}
           <div className="border-t border-border bg-card p-3 relative">
             {/* Slash Command Palette */}
@@ -498,6 +652,11 @@ export function WorkspacePanel({
                 ))}
               </div>
             )}
+            {voiceStatus && (
+              <div className="mb-2 text-xs text-muted-foreground">
+                {voiceStatus}
+              </div>
+            )}
 
             {/* Input Row */}
             <div className="flex gap-2">
@@ -521,12 +680,21 @@ export function WorkspacePanel({
               {/* Voice Input */}
               <button
                 onClick={handleVoiceInput}
+                disabled={isTranscribing}
                 className={`p-2 rounded-md transition-all border ${
                   isRecording
                     ? "bg-status-error text-white border-status-error animate-pulse"
+                    : isTranscribing
+                    ? "bg-status-idle text-white border-status-idle animate-pulse"
                     : "bg-secondary hover:bg-accent border-border text-muted-foreground"
-                }`}
-                title={isRecording ? "Stop recording" : "Voice input"}
+                } disabled:opacity-70 disabled:cursor-not-allowed`}
+                title={
+                  isTranscribing
+                    ? "Transcribing voice input"
+                    : isRecording
+                    ? "Stop recording"
+                    : "Voice input"
+                }
               >
                 <Mic className="w-4 h-4" />
               </button>
@@ -673,7 +841,7 @@ export function WorkspacePanel({
               <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
                 <span className="text-card-foreground">Success Rate</span>
                 <span className="text-card-foreground">
-                  {((agent.apiCalls.success / agent.apiCalls.total) * 100).toFixed(1)}%
+                  {apiSuccessRate.toFixed(1)}%
                 </span>
               </div>
             </div>

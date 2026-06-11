@@ -1,10 +1,13 @@
 import { z } from "zod";
 
-export const runtimeKindSchema = z.enum(["mock", "codex", "claude"]);
+export const runtimeKindSchema = z.enum(["codex", "claude"]);
 export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
 
 export const agentStatusSchema = z.enum(["running", "idle", "error", "stopped"]);
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
+
+export const approvalDecisionSchema = z.enum(["allow", "deny"]);
+export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>;
 
 export const agentEventTypeSchema = z.enum([
   "created",
@@ -19,6 +22,8 @@ export const agentEventTypeSchema = z.enum([
   "toolCall",
   "toolResult",
   "turnComplete",
+  "approvalRequest",
+  "approvalResolved",
 ]);
 export type AgentEventType = z.infer<typeof agentEventTypeSchema>;
 
@@ -110,6 +115,11 @@ export const agentEventSchema = z.object({
       toolInput: z.string().optional(),
       toolOutput: z.string().optional(),
       toolStatus: z.enum(["pending", "success", "error"]).optional(),
+      approvalId: z.string().optional(),
+      approvalKind: z.string().optional(),
+      approvalSummary: z.string().optional(),
+      approvalDetails: z.string().optional(),
+      approvalDecision: approvalDecisionSchema.optional(),
     })
     .partial()
     .optional(),
@@ -119,7 +129,7 @@ export type AgentEvent = z.infer<typeof agentEventSchema>;
 
 export const createAgentSchema = z.object({
   name: z.string().trim().min(1),
-  runtimeKind: runtimeKindSchema.default("mock"),
+  runtimeKind: runtimeKindSchema.default("codex"),
   workspacePath: z.string().trim().min(1),
   model: z.string().trim().min(1).default("codex"),
   branch: z.string().trim().min(1).optional(),
@@ -128,7 +138,7 @@ export const createAgentSchema = z.object({
   sessionId: z.string().trim().min(1).optional(),
   runtimeArgs: z.array(z.string()).optional(),
 });
-export type CreateAgentRequest = z.infer<typeof createAgentSchema>;
+export type CreateAgentRequest = z.input<typeof createAgentSchema>;
 
 export const agentCommandSchema = z.object({
   command: z.string().default(""),
@@ -210,6 +220,20 @@ export const wsServerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("agent.turn.complete"),
     agentId: z.string().min(1),
   }),
+  z.object({
+    type: z.literal("agent.approval.request"),
+    agentId: z.string().min(1),
+    approvalId: z.string().min(1),
+    kind: z.string().min(1),
+    summary: z.string(),
+    details: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("agent.approval.resolved"),
+    agentId: z.string().min(1),
+    approvalId: z.string().min(1),
+    decision: approvalDecisionSchema,
+  }),
 ]);
 export type WsServerEvent = z.infer<typeof wsServerEventSchema>;
 
@@ -222,6 +246,12 @@ export const wsClientMessageSchema = z.discriminatedUnion("type", [
     agentId: z.string().min(1),
     payload: agentCommandSchema,
   }),
+  z.object({
+    type: z.literal("agent.approval.response"),
+    agentId: z.string().min(1),
+    approvalId: z.string().min(1),
+    decision: approvalDecisionSchema,
+  }),
 ]);
 export type WsClientMessage = z.infer<typeof wsClientMessageSchema>;
 
@@ -232,5 +262,13 @@ export const serverSettingsSchema = z.object({
   corsOrigins: z.array(z.string().min(1)).default(["*"]),
   /** Path used to persist agent snapshots between restarts. Empty disables persistence. */
   persistencePath: z.string().default(""),
+  /** whisper.cpp CLI executable used by /api/transcribe. */
+  whisperCppBin: z.string().trim().min(1).default("whisper-cli"),
+  /** ggml model path. Empty disables voice transcription. */
+  whisperCppModel: z.string().trim().default(""),
+  /** Spoken language for whisper.cpp; "auto" enables auto-detection. */
+  whisperLanguage: z.string().trim().min(1).default("auto"),
+  /** ffmpeg executable used to convert browser-recorded formats to WAV. */
+  ffmpegBin: z.string().trim().min(1).default("ffmpeg"),
 });
 export type ServerSettings = z.infer<typeof serverSettingsSchema>;

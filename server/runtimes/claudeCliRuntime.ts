@@ -206,10 +206,33 @@ export class ClaudeCliRuntime implements AgentRuntime {
         ctx.ensureStarted();
         ctx.appendDelta(finalText);
       }
+      this.emitUsage(json);
       return; // turn complete handled by proc.exited
     }
 
     this.options?.onLine(`[claude] ${raw}`);
+  }
+
+  /**
+   * The final `result` event of each `claude -p` run carries the usage for
+   * the whole run (one run == one turn here), so forwarding it verbatim
+   * matches the delta semantics of onUsage. Assistant events also carry
+   * per-message usage, but the result aggregate is the reliable total.
+   */
+  private emitUsage(json: Record<string, unknown>) {
+    const usage = (json.usage ?? {}) as Record<string, unknown>;
+    const num = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+    const payload = {
+      inputTokens: num(usage.input_tokens),
+      outputTokens: num(usage.output_tokens),
+      cacheReadTokens: num(usage.cache_read_input_tokens),
+      cacheCreationTokens: num(usage.cache_creation_input_tokens),
+      costUSD: num(json.total_cost_usd),
+    };
+    if (Object.values(payload).some((value) => value !== undefined)) {
+      this.options?.onUsage?.(payload);
+    }
   }
 
   private async readJsonLines(

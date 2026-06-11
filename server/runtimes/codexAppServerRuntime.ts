@@ -1,6 +1,11 @@
 import type { AgentCommandRequest, RuntimeKind } from "../../src/shared/contracts";
 import { resolveWorkspacePath } from "./paths";
-import type { AgentRuntime, RuntimeStartOptions } from "./types";
+import type {
+  AgentRuntime,
+  RuntimeApprovalRequest,
+  RuntimeStartOptions,
+  RuntimeUsage,
+} from "./types";
 
 /**
  * Long-lived `codex app-server` subprocess driven over JSON-RPC 2.0 (stdio).
@@ -11,7 +16,8 @@ import type { AgentRuntime, RuntimeStartOptions } from "./types";
  *   3. each user prompt = turn/start { threadId, input:[{type:"text",text}], approvalPolicy }
  *   4. inbound notifications: turn/{started,completed}, item/{started,completed},
  *      thread/status/changed → idle, error
- *   5. inbound server-initiated requests (approvals) → auto-allow for now
+ *   5. inbound server-initiated requests (approvals) → forwarded to the
+ *      dashboard via onApprovalRequest; auto-allow after a timeout fallback
  *
  * Unlike `CodexExecRuntime`, the codex process **does not exit between turns** —
  * the same `thread_id` is reused, so codex keeps its in-memory context.
@@ -40,6 +46,8 @@ type RpcEnvelope = {
 };
 
 const REQUEST_TIMEOUT_MS = 120_000;
+/** How long to wait for the dashboard to answer an approval before auto-allowing. */
+const APPROVAL_TIMEOUT_MS = 60_000;
 
 export class CodexAppServerRuntime implements AgentRuntime {
   readonly kind: RuntimeKind = "codex";
@@ -60,6 +68,8 @@ export class CodexAppServerRuntime implements AgentRuntime {
 
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
+  /** Last cumulative thread totals seen, used to convert codex usage to deltas. */
+  private lastUsageTotals = { input: 0, cachedInput: 0, output: 0 };
   private currentTurn: {
     messageId: string;
     started: boolean;
@@ -74,9 +84,14 @@ export class CodexAppServerRuntime implements AgentRuntime {
   private threadReadyResolve?: () => void;
   private threadReadyReject?: (err: Error) => void;
 
-  constructor(opts: { args?: string[]; resumeSessionId?: string | null } = {}) {
+  private approvalTimeoutMs: number;
+
+  constructor(
+    opts: { args?: string[]; resumeSessionId?: string | null; approvalTimeoutMs?: number } = {},
+  ) {
     this.extraArgs = opts.args ?? [];
     this.resumeThreadId = opts.resumeSessionId ?? null;
+    this.approvalTimeoutMs = opts.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS;
   }
 
   async start(options: RuntimeStartOptions): Promise<void> {
@@ -336,21 +351,91 @@ export class CodexAppServerRuntime implements AgentRuntime {
   }
 
   private handleServerRequest(env: RpcEnvelope): void {
-    // Approvals & permissions — auto-allow for now (mode = workspace-write/never).
-    // We still respond so codex doesn't hang waiting.
+    // We must always respond so codex doesn't hang waiting.
     const method = env.method ?? "";
-    let result: Record<string, unknown> = { decision: "accept" };
     if (method === "item/permissions/requestApproval") {
       const params = (env.params ?? {}) as Record<string, unknown>;
-      result = { permissions: params.permissions ?? {}, scope: "turn" };
-    } else if (method === "item/tool/requestUserInput") {
-      result = { answers: {} };
-    } else if (method === "item/tool/call") {
-      result = {
+      this.replyToServerRequest(env, { permissions: params.permissions ?? {}, scope: "turn" });
+      return;
+    }
+    if (method === "item/tool/requestUserInput") {
+      this.replyToServerRequest(env, { answers: {} });
+      return;
+    }
+    if (method === "item/tool/call") {
+      this.replyToServerRequest(env, {
         success: false,
         contentItems: [{ type: "inputText", text: "tool not available" }],
-      };
+      });
+      return;
     }
+    // Command/patch approvals (and any other request expecting a decision):
+    // forward to the dashboard; fall back to allow on missing handler/timeout.
+    void this.resolveApprovalRequest(env);
+  }
+
+  private async resolveApprovalRequest(env: RpcEnvelope): Promise<void> {
+    const method = env.method ?? "";
+    const params = (env.params ?? {}) as Record<string, any>;
+    const request: RuntimeApprovalRequest = {
+      approvalId: `approval-${crypto.randomUUID()}`,
+      kind: /fileChange|applyPatch|patch/i.test(method) ? "patch" : "command",
+      summary: this.describeApproval(method, params),
+      details: JSON.stringify(params).slice(0, 2000),
+    };
+
+    let decision: "allow" | "deny" = "allow";
+    const handler = this.options?.onApprovalRequest;
+    if (!handler) {
+      this.options?.onLine(`[codex] approval ${method} auto-allowed (no approval handler)`);
+    } else {
+      decision = await this.awaitApprovalDecision(handler(request), method);
+    }
+    if (decision === "deny") {
+      this.options?.onLine(`[codex] approval denied: ${request.summary}`);
+    }
+    this.replyToServerRequest(env, { decision: decision === "allow" ? "accept" : "decline" });
+  }
+
+  /** Race the dashboard's answer against the auto-allow fallback timeout. */
+  private awaitApprovalDecision(
+    answer: Promise<"allow" | "deny">,
+    method: string,
+  ): Promise<"allow" | "deny"> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.options?.onLine(
+          `[codex] approval ${method} unanswered after ${this.approvalTimeoutMs}ms — falling back to allow`,
+        );
+        resolve("allow");
+      }, this.approvalTimeoutMs);
+      timer.unref?.();
+      answer.then(
+        (decision) => {
+          clearTimeout(timer);
+          resolve(decision === "deny" ? "deny" : "allow");
+        },
+        (err) => {
+          clearTimeout(timer);
+          this.options?.onLine(`[codex] approval handler failed (${err}) — falling back to allow`);
+          resolve("allow");
+        },
+      );
+    });
+  }
+
+  private describeApproval(method: string, params: Record<string, any>): string {
+    const item = (params.item ?? params) as Record<string, any>;
+    const command = item.command ?? params.command;
+    if (typeof command === "string" && command) return `Run command: ${command}`;
+    if (Array.isArray(command) && command.length > 0) {
+      return `Run command: ${command.join(" ")}`;
+    }
+    if (typeof params.reason === "string" && params.reason) return params.reason;
+    return `Approve ${method}`;
+  }
+
+  private replyToServerRequest(env: RpcEnvelope, result: Record<string, unknown>): void {
     this.writeJson({ jsonrpc: "2.0", id: env.id ?? null, result });
   }
 
@@ -385,15 +470,56 @@ export class CodexAppServerRuntime implements AgentRuntime {
         if (method === "thread/status/changed" && params?.status?.type !== "idle") break;
         this.completeTurn();
         break;
+      case "thread/tokenUsage/updated":
+        this.handleTokenUsage(params);
+        break;
       case "error": {
         const msg = String(params.message ?? "unknown");
         this.options?.onError?.(new Error(`codex: ${msg}`));
         break;
       }
       default:
-        // Silent for noisy delta/usage notifications we opted out of.
+        // Silent for noisy delta notifications we opted out of.
         break;
     }
+  }
+
+  /**
+   * codex app-server reports cumulative per-thread totals
+   * ({ tokenUsage: { total, last, modelContextWindow } }); convert to deltas
+   * so the supervisor can accumulate them uniformly across runtimes. codex
+   * counts cached reads inside `inputTokens`, so we report the non-cached
+   * remainder as input. codex exposes no pricing — costUSD stays unset.
+   */
+  private handleTokenUsage(params: Record<string, any>): void {
+    const usage = (params.tokenUsage ?? {}) as Record<string, any>;
+    const total = usage.total as Record<string, any> | undefined;
+    if (!total) return;
+    const n = (v: unknown): number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+
+    const input = n(total.inputTokens);
+    const cachedInput = n(total.cachedInputTokens);
+    const output = n(total.outputTokens);
+    const deltaInput = Math.max(0, input - this.lastUsageTotals.input);
+    const deltaCached = Math.max(0, cachedInput - this.lastUsageTotals.cachedInput);
+    const deltaOutput = Math.max(0, output - this.lastUsageTotals.output);
+    this.lastUsageTotals = { input, cachedInput, output };
+    if (deltaInput === 0 && deltaCached === 0 && deltaOutput === 0) return;
+
+    const payload: RuntimeUsage = {
+      inputTokens: Math.max(0, deltaInput - deltaCached),
+      outputTokens: deltaOutput,
+      cacheReadTokens: deltaCached,
+    };
+    // `last.totalTokens` ≈ tokens in the most recent model request, i.e. the
+    // current context size — a real basis for context utilisation.
+    const window = n(usage.modelContextWindow);
+    const lastTotal = n((usage.last as Record<string, any> | undefined)?.totalTokens);
+    if (window > 0 && lastTotal > 0) {
+      payload.contextPercent = Math.min(100, Math.round((lastTotal / window) * 100));
+    }
+    this.options?.onUsage?.(payload);
   }
 
   private ensureTurnStarted(): void {

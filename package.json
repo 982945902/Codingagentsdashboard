@@ -8,6 +8,8 @@
     "dev": "vite",
     "dev:server": "bun --watch server/index.ts",
     "dev:full": "concurrently \"pnpm dev:server\" \"pnpm dev\"",
+    "start": "bun server/index.ts",
+    "deploy:local": "pnpm build && pnpm start",
     "test": "bun test",
     "test:watch": "bun test --watch",
     "build:server": "bunx tsc -p tsconfig.server.json --noEmit"
