@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "../app";
 import { AgentSupervisor } from "../agentSupervisor";
 import { createAgentStore } from "../store";
-import { MockRuntime } from "../runtimes/mockRuntime";
 import type { AgentRuntime, RuntimeStartOptions } from "../runtimes/types";
 
 const apiKey = "test-key";
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
+const tempDirs: string[] = [];
 
 class CapturingRuntime implements AgentRuntime {
-  kind = "mock" as const;
+  kind = "codex" as const;
   private onLine?: (line: string) => void;
   private onExit?: (code: number | null) => void;
   sentCommands: string[] = [];
@@ -31,11 +34,54 @@ class CapturingRuntime implements AgentRuntime {
   }
 }
 
-function startTestServer(useSupervisor: boolean | "mock" = false) {
+class StructuredRuntime implements AgentRuntime {
+  kind = "codex" as const;
+  private options?: RuntimeStartOptions;
+
+  async start(options: RuntimeStartOptions) {
+    this.options = options;
+    options.onLine("ready");
+  }
+
+  async send(request: { command: string } | string) {
+    const command = typeof request === "string" ? request : request.command;
+    const messageId = `msg-${crypto.randomUUID()}`;
+    const toolCallId = `tool-${crypto.randomUUID()}`;
+    this.options?.onMessageStart?.({ messageId, role: "assistant" });
+    this.options?.onMessageDelta?.({ messageId, delta: `Real test reply to: ${command}` });
+    this.options?.onToolCall?.({
+      messageId,
+      toolCallId,
+      toolName: "shell",
+      input: command,
+    });
+    this.options?.onToolResult?.({
+      messageId,
+      toolCallId,
+      status: "success",
+      output: "ok",
+    });
+    this.options?.onMessageEnd?.({
+      messageId,
+      content: `Real test reply to: ${command}`,
+      format: "markdown",
+    });
+    this.options?.onTurnComplete?.();
+  }
+
+  async stop() {
+    this.options?.onExit(0);
+  }
+}
+
+function startTestServer(
+  useSupervisor: boolean | "structured" = false,
+  options: { staticDir?: string } = {},
+) {
   const store = createAgentStore();
   const supervisor =
-    useSupervisor === "mock"
-      ? new AgentSupervisor(store, () => new MockRuntime())
+    useSupervisor === "structured"
+      ? new AgentSupervisor(store, () => new StructuredRuntime())
       : useSupervisor
         ? new AgentSupervisor(store, () => new CapturingRuntime())
         : undefined;
@@ -46,9 +92,14 @@ function startTestServer(useSupervisor: boolean | "mock" = false) {
       host: "127.0.0.1",
       port: 0,
       persistencePath: "",
+      whisperCppBin: "whisper-cli",
+      whisperCppModel: "",
+      whisperLanguage: "auto",
+      ffmpegBin: "ffmpeg",
     },
     store,
     supervisor,
+    staticDir: options.staticDir,
   });
   const server = Bun.serve({
     port: 0,
@@ -79,7 +130,19 @@ afterEach(() => {
   for (const server of servers.splice(0)) {
     server.stop(true);
   }
+  for (const dir of tempDirs.splice(0)) {
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
 });
+
+function createStaticFixture() {
+  const dir = mkdtempSync(join(tmpdir(), "agents-static-"));
+  tempDirs.push(dir);
+  mkdirSync(join(dir, "assets"));
+  writeFileSync(join(dir, "index.html"), "<!doctype html><div id=\"root\">app</div>");
+  writeFileSync(join(dir, "assets", "app.js"), "console.log('app');");
+  return dir;
+}
 
 describe("Bun HTTP app", () => {
   it("serves health without auth", async () => {
@@ -92,6 +155,24 @@ describe("Bun HTTP app", () => {
     expect(body).toEqual({ status: "ok" });
   });
 
+  it("serves built frontend assets and falls back to index for SPA routes", async () => {
+    const staticDir = createStaticFixture();
+    const { baseUrl } = startTestServer(false, { staticDir });
+
+    const root = await fetch(`${baseUrl}/`);
+    const asset = await fetch(`${baseUrl}/assets/app.js`);
+    const route = await fetch(`${baseUrl}/agents/abc`);
+
+    expect(root.status).toBe(200);
+    expect(await root.text()).toContain("<div id=\"root\">app</div>");
+    expect(root.headers.get("content-type")).toContain("text/html");
+    expect(asset.status).toBe(200);
+    expect(await asset.text()).toBe("console.log('app');");
+    expect(asset.headers.get("content-type")).toContain("javascript");
+    expect(route.status).toBe(200);
+    expect(await route.text()).toContain("<div id=\"root\">app</div>");
+  });
+
   it("requires an API key for agent routes", async () => {
     const { baseUrl } = startTestServer();
 
@@ -101,17 +182,23 @@ describe("Bun HTTP app", () => {
   });
 
   it("lists and fetches agents with auth", async () => {
-    const { baseUrl } = startTestServer();
+    const { baseUrl, app } = startTestServer();
+    const agent = app.store.create({
+      name: "Docs Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/docs",
+      model: "codex",
+    });
 
     const listResponse = await fetch(`${baseUrl}/api/agents`, authed());
     const listBody = await listResponse.json();
-    const detailResponse = await fetch(`${baseUrl}/api/agents/agent-001`, authed());
+    const detailResponse = await fetch(`${baseUrl}/api/agents/${agent.id}`, authed());
     const detailBody = await detailResponse.json();
 
     expect(listResponse.status).toBe(200);
-    expect(listBody.agents).toHaveLength(4);
+    expect(listBody.agents).toHaveLength(1);
     expect(detailResponse.status).toBe(200);
-    expect(detailBody.agent.name).toBe("Frontend Builder");
+    expect(detailBody.agent.name).toBe("Docs Agent");
   });
 
   it("creates agents with auth", async () => {
@@ -124,7 +211,6 @@ describe("Bun HTTP app", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           name: "Docs Agent",
-          runtimeKind: "mock",
           workspacePath: "/tmp/docs",
           model: "claude-sonnet-4",
         }),
@@ -135,19 +221,57 @@ describe("Bun HTTP app", () => {
     expect(response.status).toBe(201);
     expect(body.agent.name).toBe("Docs Agent");
     expect(body.agent.status).toBe("idle");
+    expect(body.agent.runtimeKind).toBe("codex");
+  });
+
+  it("persists agent snapshots through default app settings", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-http-default-persist-"));
+    tempDirs.push(dir);
+    const path = join(dir, ".data", "agents.json");
+    const settings = {
+      apiKey,
+      corsOrigins: ["*"],
+      host: "127.0.0.1",
+      port: 0,
+      persistencePath: path,
+      whisperCppBin: "whisper-cli",
+      whisperCppModel: "",
+      whisperLanguage: "auto",
+      ffmpegBin: "ffmpeg",
+    };
+    const initial = createApp({ settings });
+    initial.store.create({
+      name: "Persistent Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/persistent-agent",
+      model: "codex",
+      sessionId: "codex-thread-one-to-one",
+    });
+
+    const restored = createApp({ settings });
+
+    expect(existsSync(path)).toBe(true);
+    expect(restored.store.list()).toHaveLength(1);
+    expect(restored.store.list()[0]?.sessionId).toBe("codex-thread-one-to-one");
   });
 
   it("starts, sends commands to, and stops agents through REST", async () => {
-    const { baseUrl } = startTestServer(true);
+    const { baseUrl, app } = startTestServer(true);
+    const agent = app.store.create({
+      name: "Command Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/command-agent",
+      model: "codex",
+    });
 
     const start = await fetch(
-      `${baseUrl}/api/agents/agent-003/start`,
+      `${baseUrl}/api/agents/${agent.id}/start`,
       authed({ method: "POST" }),
     );
     expect(start.status).toBe(200);
 
     const command = await fetch(
-      `${baseUrl}/api/agents/agent-003/commands`,
+      `${baseUrl}/api/agents/${agent.id}/commands`,
       authed({
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -157,21 +281,53 @@ describe("Bun HTTP app", () => {
     expect(command.status).toBe(200);
 
     const stop = await fetch(
-      `${baseUrl}/api/agents/agent-003/stop`,
+      `${baseUrl}/api/agents/${agent.id}/stop`,
       authed({ method: "POST" }),
     );
     expect(stop.status).toBe(200);
 
-    const detail = await fetch(`${baseUrl}/api/agents/agent-003`, authed());
+    const detail = await fetch(`${baseUrl}/api/agents/${agent.id}`, authed());
     const body = await detail.json();
     expect(body.agent.status).toBe("stopped");
   });
 
+  it("pauses and restarts agents through REST", async () => {
+    const { baseUrl, app } = startTestServer(true);
+    const agent = app.store.create({
+      name: "Lifecycle Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/lifecycle-agent",
+      model: "codex",
+      sessionId: "rest-session",
+    });
+
+    expect(
+      await fetch(`${baseUrl}/api/agents/${agent.id}/start`, authed({ method: "POST" })),
+    ).toHaveProperty("status", 200);
+    expect(
+      await fetch(`${baseUrl}/api/agents/${agent.id}/pause`, authed({ method: "POST" })),
+    ).toHaveProperty("status", 200);
+    expect(app.store.get(agent.id)?.status).toBe("paused");
+    expect(app.store.get(agent.id)?.sessionId).toBe("rest-session");
+
+    expect(
+      await fetch(`${baseUrl}/api/agents/${agent.id}/restart`, authed({ method: "POST" })),
+    ).toHaveProperty("status", 200);
+    expect(app.store.get(agent.id)?.status).toBe("running");
+    expect(app.store.get(agent.id)?.sessionId).toBe("rest-session");
+  });
+
   it("rejects commands when the agent is not running", async () => {
-    const { baseUrl } = startTestServer(true);
+    const { baseUrl, app } = startTestServer(true);
+    const agent = app.store.create({
+      name: "Idle Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/idle-agent",
+      model: "codex",
+    });
 
     const command = await fetch(
-      `${baseUrl}/api/agents/agent-002/commands`,
+      `${baseUrl}/api/agents/${agent.id}/commands`,
       authed({
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -182,15 +338,21 @@ describe("Bun HTTP app", () => {
   });
 
   it("deletes agents", async () => {
-    const { baseUrl } = startTestServer(true);
+    const { baseUrl, app } = startTestServer(true);
+    const agent = app.store.create({
+      name: "Deleted Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/deleted-agent",
+      model: "codex",
+    });
 
     const del = await fetch(
-      `${baseUrl}/api/agents/agent-002`,
+      `${baseUrl}/api/agents/${agent.id}`,
       authed({ method: "DELETE" }),
     );
     expect(del.status).toBe(200);
 
-    const detail = await fetch(`${baseUrl}/api/agents/agent-002`, authed());
+    const detail = await fetch(`${baseUrl}/api/agents/${agent.id}`, authed());
     expect(detail.status).toBe(404);
   });
 
@@ -216,6 +378,12 @@ describe("Bun HTTP app", () => {
 
   it("delivers supervisor events over the WebSocket channel", async () => {
     const { baseUrl, app } = startTestServer(true);
+    const agent = app.store.create({
+      name: "WebSocket Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/ws-agent",
+      model: "codex",
+    });
     const wsUrl = baseUrl.replace("http://", "ws://") + `/ws/agents?apiKey=${apiKey}`;
 
     const messages: string[] = [];
@@ -228,7 +396,7 @@ describe("Bun HTTP app", () => {
       messages.push(String(event.data));
     });
 
-    await app.supervisor.startAgent("agent-003");
+    await app.supervisor.startAgent(agent.id);
     await new Promise((resolve) => setTimeout(resolve, 50));
     ws.close();
 
@@ -238,7 +406,13 @@ describe("Bun HTTP app", () => {
   });
 
   it("delivers structured chat and tool events over the WebSocket channel", async () => {
-    const { baseUrl, app } = startTestServer("mock");
+    const { baseUrl, app } = startTestServer("structured");
+    const agent = app.store.create({
+      name: "Structured Agent",
+      runtimeKind: "codex",
+      workspacePath: "/tmp/structured-agent",
+      model: "codex",
+    });
     const wsUrl = baseUrl.replace("http://", "ws://") + `/ws/agents?apiKey=${apiKey}`;
 
     const messages: string[] = [];
@@ -251,8 +425,8 @@ describe("Bun HTTP app", () => {
       messages.push(String(event.data));
     });
 
-    await app.supervisor.startAgent("agent-001");
-    await app.supervisor.sendCommand("agent-001", { command: "status" });
+    await app.supervisor.startAgent(agent.id);
+    await app.supervisor.sendCommand(agent.id, { command: "status" });
     await new Promise((resolve) => setTimeout(resolve, 80));
     ws.close();
 
@@ -272,7 +446,7 @@ describe("Bun HTTP app", () => {
     const toolResult = events.find((e) => e.type === "agent.tool.result");
 
     expect(start.message.role).toBe("assistant");
-    expect(end.message.content).toContain("Mock reply");
+    expect(end.message.content).toContain("Real test reply");
     expect(toolCall.toolName).toBe("shell");
     expect(toolResult.status).toBe("success");
     expect(toolCall.messageId).toBe(toolResult.messageId);

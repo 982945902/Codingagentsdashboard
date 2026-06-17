@@ -1,11 +1,13 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  agentSnapshotSchema,
   createAgentSchema,
   type AgentEvent,
   type AgentSnapshot,
   type CreateAgentRequest,
 } from "../src/shared/contracts";
+import type { RuntimeUsage } from "./runtimes/types";
 
 export type StoreEvent =
   | { type: "created"; agent: AgentSnapshot }
@@ -20,6 +22,10 @@ export interface AgentStore {
   get(id: string): AgentSnapshot | undefined;
   create(request: CreateAgentRequest): AgentSnapshot;
   update(id: string, patch: Partial<AgentSnapshot>): AgentSnapshot | undefined;
+  /** Accumulate a runtime usage delta into tokenUsage/costUSD and derive cacheHitRate. */
+  applyUsage(id: string, usage: RuntimeUsage): AgentSnapshot | undefined;
+  /** Record one completed runtime turn (success) or runtime error in apiCalls. */
+  recordApiCall(id: string, outcome: "success" | "error"): AgentSnapshot | undefined;
   delete(id: string): boolean;
   appendLog(id: string, line: string): AgentSnapshot | undefined;
   events(): AgentEvent[];
@@ -31,123 +37,6 @@ export interface AgentStoreOptions {
   /** Optional file path used to persist snapshots between server restarts. */
   persistencePath?: string;
 }
-
-const SEED_TIMESTAMP = "2026-06-03T00:00:00.000Z";
-
-const seededAgents: AgentSnapshot[] = [
-  {
-    id: "agent-001",
-    name: "Frontend Builder",
-    runtimeKind: "mock",
-    status: "running",
-    currentTask: "Building React components for dashboard",
-    uptime: "2h 34m",
-    tasksCompleted: 12,
-    lastActive: "2 mins ago",
-    branch: "feature/dashboard-ui",
-    logs: [
-      "[10:23] Starting build process...",
-      "[10:24] Compiling components...",
-      "[10:25] Build successful",
-    ],
-    tokenUsage: { input: 145230, output: 52340, cacheRead: 89450, cacheCreation: 12300 },
-    costUSD: 2.45,
-    cacheHitRate: 62,
-    apiCalls: { total: 234, success: 232, errors: 2 },
-    model: "claude-sonnet-4",
-    contextUsage: 45,
-    workspacePath: "/work/frontend",
-    sessionId: null,
-    runtimeArgs: [],
-    messages: [],
-    createdAt: SEED_TIMESTAMP,
-    updatedAt: SEED_TIMESTAMP,
-  },
-  {
-    id: "agent-002",
-    name: "Backend API",
-    runtimeKind: "mock",
-    status: "running",
-    currentTask: "Optimizing database queries",
-    uptime: "5h 12m",
-    tasksCompleted: 8,
-    lastActive: "5 mins ago",
-    branch: "feature/db-optimization",
-    logs: [
-      "[09:15] Connected to database",
-      "[09:16] Analyzing query performance...",
-      "[09:45] Applied index optimizations",
-    ],
-    tokenUsage: { input: 98420, output: 34210, cacheRead: 45670, cacheCreation: 8900 },
-    costUSD: 1.67,
-    cacheHitRate: 48,
-    apiCalls: { total: 156, success: 155, errors: 1 },
-    model: "claude-sonnet-4",
-    contextUsage: 28,
-    workspacePath: "/work/backend",
-    sessionId: null,
-    runtimeArgs: [],
-    messages: [],
-    createdAt: SEED_TIMESTAMP,
-    updatedAt: SEED_TIMESTAMP,
-  },
-  {
-    id: "agent-003",
-    name: "Testing Bot",
-    runtimeKind: "mock",
-    status: "idle",
-    currentTask: null,
-    uptime: "1h 45m",
-    tasksCompleted: 24,
-    lastActive: "15 mins ago",
-    branch: "main",
-    logs: [
-      "[08:30] Test suite initialized",
-      "[08:31] All tests passed (24/24)",
-      "[08:32] Waiting for new tasks...",
-    ],
-    tokenUsage: { input: 234560, output: 89340, cacheRead: 156780, cacheCreation: 18900 },
-    costUSD: 3.89,
-    cacheHitRate: 71,
-    apiCalls: { total: 412, success: 412, errors: 0 },
-    model: "claude-sonnet-4",
-    contextUsage: 15,
-    workspacePath: "/work/testing",
-    sessionId: null,
-    runtimeArgs: [],
-    messages: [],
-    createdAt: SEED_TIMESTAMP,
-    updatedAt: SEED_TIMESTAMP,
-  },
-  {
-    id: "agent-004",
-    name: "Code Reviewer",
-    runtimeKind: "mock",
-    status: "error",
-    currentTask: "Connection lost during review",
-    uptime: "3h 22m",
-    tasksCompleted: 6,
-    lastActive: "1h ago",
-    branch: "feature/auth-module",
-    logs: [
-      "[07:00] Starting code review...",
-      "[07:15] Found 3 issues",
-      "[07:30] ERROR: Connection timeout",
-    ],
-    tokenUsage: { input: 67890, output: 23450, cacheRead: 12340, cacheCreation: 5600 },
-    costUSD: 1.12,
-    cacheHitRate: 18,
-    apiCalls: { total: 89, success: 86, errors: 3 },
-    model: "claude-sonnet-4",
-    contextUsage: 82,
-    workspacePath: "/work/review",
-    sessionId: null,
-    runtimeArgs: [],
-    messages: [],
-    createdAt: SEED_TIMESTAMP,
-    updatedAt: SEED_TIMESTAMP,
-  },
-];
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -175,7 +64,11 @@ function loadFromDisk(path: string): AgentSnapshot[] | null {
     const text = readFileSync(path, "utf8");
     if (!text) return null;
     const parsed = JSON.parse(text) as AgentSnapshot[];
-    return Array.isArray(parsed) ? parsed : null;
+    if (!Array.isArray(parsed)) return null;
+    return parsed
+      .map((agent) => agentSnapshotSchema.safeParse(agent))
+      .filter((result) => result.success)
+      .map((result) => result.data);
   } catch {
     return null;
   }
@@ -196,7 +89,7 @@ export function createAgentStore(
   const options: AgentStoreOptions = Array.isArray(optionsOrSeed)
     ? { seed: optionsOrSeed }
     : optionsOrSeed;
-  const initialSeed = options.seed ?? seededAgents;
+  const initialSeed = options.seed ?? [];
   const restoredFromDisk = options.persistencePath
     ? loadFromDisk(options.persistencePath)
     : null;
@@ -217,6 +110,24 @@ export function createAgentStore(
     if (options.persistencePath) {
       persistSafely(options.persistencePath, [...agents.values()]);
     }
+  }
+
+  function updateAgent(
+    id: string,
+    patch: Partial<AgentSnapshot>,
+  ): AgentSnapshot | undefined {
+    const current = agents.get(id);
+    if (!current) return undefined;
+    const next: AgentSnapshot = {
+      ...current,
+      ...patch,
+      id,
+      updatedAt: new Date().toISOString(),
+    };
+    agents.set(id, next);
+    agentEvents.push(event(id, "updated", "Agent updated", next));
+    emit({ type: "updated", agent: clone(next) });
+    return clone(next);
   }
 
   return {
@@ -257,19 +168,43 @@ export function createAgentStore(
       emit({ type: "created", agent: clone(agent) });
       return clone(agent);
     },
-    update: (id, patch) => {
+    update: updateAgent,
+    applyUsage: (id, usage) => {
       const current = agents.get(id);
       if (!current) return undefined;
-      const next: AgentSnapshot = {
-        ...current,
-        ...patch,
-        id,
-        updatedAt: new Date().toISOString(),
+      const add = (base: number, delta?: number) =>
+        delta !== undefined && Number.isFinite(delta) && delta > 0
+          ? Math.round(base + delta)
+          : base;
+      const tokenUsage = {
+        input: add(current.tokenUsage.input, usage.inputTokens),
+        output: add(current.tokenUsage.output, usage.outputTokens),
+        cacheRead: add(current.tokenUsage.cacheRead, usage.cacheReadTokens),
+        cacheCreation: add(current.tokenUsage.cacheCreation, usage.cacheCreationTokens),
       };
-      agents.set(id, next);
-      agentEvents.push(event(id, "updated", "Agent updated", next));
-      emit({ type: "updated", agent: clone(next) });
-      return clone(next);
+      const patch: Partial<AgentSnapshot> = { tokenUsage };
+      if (usage.costUSD !== undefined && Number.isFinite(usage.costUSD) && usage.costUSD > 0) {
+        patch.costUSD = current.costUSD + usage.costUSD;
+      }
+      const promptTokens = tokenUsage.input + tokenUsage.cacheRead;
+      if (promptTokens > 0) {
+        patch.cacheHitRate = Math.round((tokenUsage.cacheRead / promptTokens) * 100);
+      }
+      if (usage.contextPercent !== undefined && Number.isFinite(usage.contextPercent)) {
+        patch.contextUsage = Math.min(100, Math.max(0, usage.contextPercent));
+      }
+      return updateAgent(id, patch);
+    },
+    recordApiCall: (id, outcome) => {
+      const current = agents.get(id);
+      if (!current) return undefined;
+      return updateAgent(id, {
+        apiCalls: {
+          total: current.apiCalls.total + 1,
+          success: current.apiCalls.success + (outcome === "success" ? 1 : 0),
+          errors: current.apiCalls.errors + (outcome === "error" ? 1 : 0),
+        },
+      });
     },
     delete: (id) => {
       const existed = agents.delete(id);

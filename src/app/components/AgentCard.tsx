@@ -3,7 +3,7 @@ import { Activity, CheckCircle, AlertCircle, Pause } from "lucide-react";
 interface Agent {
   id: string;
   name: string;
-  status: "running" | "idle" | "error" | "stopped";
+  status: "idle" | "running" | "busy" | "paused" | "stopped" | "error";
   currentTask: string | null;
   uptime: string;
   cpu: number;
@@ -24,6 +24,18 @@ export function AgentCard({ agent, onClick }: AgentCardProps) {
       color: "text-green-600 dark:text-green-400",
       bg: "bg-green-500/10",
       label: "Running",
+    },
+    busy: {
+      icon: Activity,
+      color: "text-blue-600 dark:text-blue-400",
+      bg: "bg-blue-500/10",
+      label: "Busy",
+    },
+    paused: {
+      icon: Pause,
+      color: "text-purple-600 dark:text-purple-400",
+      bg: "bg-purple-500/10",
+      label: "Paused",
     },
     idle: {
       icon: Pause,

@@ -21,3 +21,5 @@ console.log(
   `Coding agents backend listening on http://${server.hostname}:${server.port}`,
 );
 console.log(`WebSocket channel: ws://${server.hostname}:${server.port}/ws/agents`);
+
+setInterval(() => {}, 60_000);

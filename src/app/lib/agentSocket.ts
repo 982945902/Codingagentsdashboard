@@ -4,6 +4,8 @@ export interface AgentCommandAttachment {
   name: string;
   size: number;
   mimeType: string;
+  encoding?: "text" | "base64";
+  content?: string;
 }
 
 export interface AgentCommandRequest {
@@ -55,14 +57,33 @@ export type AgentEvent =
       status: "success" | "error";
       output: string;
     }
-  | { type: "agent.turn.complete"; agentId: string };
+  | { type: "agent.turn.complete"; agentId: string }
+  | {
+      type: "agent.approval.request";
+      agentId: string;
+      approvalId: string;
+      kind: string;
+      summary: string;
+      details?: string;
+    }
+  | {
+      type: "agent.approval.resolved";
+      agentId: string;
+      approvalId: string;
+      decision: ApprovalDecision;
+    };
+
+export type ApprovalDecision = "allow" | "deny";
 
 export type SocketState = "connecting" | "connected" | "closed" | "error";
 
 export interface AgentSocket {
   sendCommand(agentId: string, payload: AgentCommandRequest): void;
   startAgent(agentId: string): void;
+  pauseAgent(agentId: string): void;
+  restartAgent(agentId: string): void;
   stopAgent(agentId: string): void;
+  respondToApproval(agentId: string, approvalId: string, decision: ApprovalDecision): void;
   close(): void;
 }
 
@@ -128,8 +149,17 @@ export function openAgentSocket(
     startAgent(agentId) {
       send({ type: "agent.start", agentId });
     },
+    pauseAgent(agentId) {
+      send({ type: "agent.pause", agentId });
+    },
+    restartAgent(agentId) {
+      send({ type: "agent.restart", agentId });
+    },
     stopAgent(agentId) {
       send({ type: "agent.stop", agentId });
+    },
+    respondToApproval(agentId, approvalId, decision) {
+      send({ type: "agent.approval.response", agentId, approvalId, decision });
     },
     close() {
       socket.close();

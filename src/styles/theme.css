@@ -42,8 +42,10 @@
 
   /* Agent status colors (for light mode) */
   --status-running: #2ea043;
+  --status-busy: #0969da;
   --status-error: #cf222e;
   --status-idle: #bf8700;
+  --status-paused: #8250df;
   --status-stopped: #57606a;
   --success: #1a7f37;
 }
@@ -86,8 +88,10 @@
 
   /* Agent status colors (for dark mode) */
   --status-running: #3fb950;
+  --status-busy: #58a6ff;
   --status-error: #f85149;
   --status-idle: #d29922;
+  --status-paused: #a371f7;
   --status-stopped: #6e7681;
   --success: #3fb950;
 }
@@ -121,8 +125,10 @@
   --color-chart-5: var(--chart-5);
   --color-success: var(--success);
   --color-status-running: var(--status-running);
+  --color-status-busy: var(--status-busy);
   --color-status-error: var(--status-error);
   --color-status-idle: var(--status-idle);
+  --color-status-paused: var(--status-paused);
   --color-status-stopped: var(--status-stopped);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

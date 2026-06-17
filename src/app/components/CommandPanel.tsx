@@ -11,7 +11,7 @@ import {
 interface Agent {
   id: string;
   name: string;
-  status: "running" | "idle" | "error" | "stopped";
+  status: "idle" | "running" | "busy" | "paused" | "stopped" | "error";
   currentTask: string | null;
   uptime: string;
   cpu: number;

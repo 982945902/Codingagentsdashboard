@@ -3,24 +3,56 @@ import type {
   AgentEvent,
   AgentMessage,
   AgentSnapshot,
+  ApprovalDecision,
 } from "../src/shared/contracts";
 import type { AgentStore } from "./store";
 import { createRuntimeForAgent } from "./runtimes/registry";
-import type { AgentRuntime, RuntimeFactory } from "./runtimes/types";
+import type {
+  AgentRuntime,
+  RuntimeApprovalRequest,
+  RuntimeFactory,
+  RuntimeUsage,
+} from "./runtimes/types";
 
 export type SupervisorListener = (event: AgentEvent) => void;
+
+export interface SupervisorOptions {
+  /** How long an approval may stay unanswered before auto-allowing. */
+  approvalTimeoutMs?: number;
+}
+
+const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
+const MAX_ATTACHMENT_CONTENT_CHARS = 262_144;
+
+interface PendingApproval {
+  resolve: (decision: ApprovalDecision) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+type DashboardSlashCommand =
+  | { kind: "clear"; raw: string }
+  | { kind: "model"; raw: string; value: string }
+  | { kind: "dir"; raw: string; value: string }
+  | { kind: "resume"; raw: string; value: string }
+  | { kind: "new-session"; raw: string }
+  | { kind: "error"; raw: string; message: string };
 
 export class AgentSupervisor {
   private readonly runtimes = new Map<string, AgentRuntime>();
   private readonly eventBuffers = new Map<string, AgentEvent[]>();
   private readonly listeners = new Set<SupervisorListener>();
   private readonly runtimeFactory: RuntimeFactory;
+  /** Pending approval resolvers, keyed agentId → approvalId. */
+  private readonly pendingApprovals = new Map<string, Map<string, PendingApproval>>();
+  private readonly approvalTimeoutMs: number;
 
   constructor(
     private readonly store: AgentStore,
     runtimeFactory: RuntimeFactory = createRuntimeForAgent,
+    options: SupervisorOptions = {},
   ) {
     this.runtimeFactory = runtimeFactory;
+    this.approvalTimeoutMs = options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
   }
 
   subscribe(listener: SupervisorListener): () => void {
@@ -35,6 +67,12 @@ export class AgentSupervisor {
   }
 
   async startAgent(agentId: string): Promise<AgentEvent[]> {
+    const events = await this.startAgentInternal(agentId);
+    this.broadcast(events);
+    return events;
+  }
+
+  private async startAgentInternal(agentId: string): Promise<AgentEvent[]> {
     const agent = this.store.get(agentId);
     if (!agent) return [agentEvent(agentId, "error", "Agent not found")];
 
@@ -43,7 +81,6 @@ export class AgentSupervisor {
       const events = updated
       ? [agentEvent(agentId, "updated", "Agent updated", updated)]
         : [];
-      this.broadcast(events);
       return events;
     }
 
@@ -60,6 +97,10 @@ export class AgentSupervisor {
     try {
       await runtime.start(this.buildStartOptions(agentId, updated ?? agent));
       events.push(...this.drainEvents(agentId));
+      pushAgentUpdated(
+        events,
+        this.store.update(agentId, { status: "running", currentTask: null }),
+      );
     } catch (error) {
       this.runtimes.delete(agentId);
       const message = error instanceof Error ? error.message : String(error);
@@ -72,7 +113,6 @@ export class AgentSupervisor {
       events.push(agentEvent(agentId, "error", message, failed));
     }
 
-    this.broadcast(events);
     return events;
   }
 
@@ -87,13 +127,6 @@ export class AgentSupervisor {
       return events;
     }
 
-    const runtime = this.runtimes.get(agentId);
-    if (!runtime) {
-      const events = [agentEvent(agentId, "error", "Agent is not running")];
-      this.broadcast(events);
-      return events;
-    }
-
     const command = request.command.trim();
     if (!command) {
       const events = [agentEvent(agentId, "error", "Command is required")];
@@ -101,13 +134,28 @@ export class AgentSupervisor {
       return events;
     }
 
+    const slash = parseDashboardSlashCommand(command);
+    if (slash) {
+      const events = await this.handleDashboardSlashCommand(agentId, slash);
+      this.broadcast(events);
+      return events;
+    }
+
+    const runtime = this.runtimes.get(agentId);
+    if (!runtime) {
+      const events = [agentEvent(agentId, "error", "Agent is not running")];
+      this.broadcast(events);
+      return events;
+    }
+
+    const runtimeCommand = buildRuntimeCommand(command, request.attachments ?? []);
     const events: AgentEvent[] = [agentEvent(agentId, "command", command)];
 
     // Record the user message in the structured chat history immediately.
     const userMessage: AgentMessage = {
       id: `msg-${crypto.randomUUID()}`,
       role: "user",
-      content: command,
+      content: runtimeCommand,
       format: "text",
       streaming: false,
       toolCalls: [],
@@ -117,17 +165,18 @@ export class AgentSupervisor {
     pushAgentUpdated(events, withUser);
 
     const updated = this.store.update(agentId, {
-      status: "running",
+      status: "busy",
       currentTask: command,
     });
     pushAgentUpdated(events, updated);
 
     try {
-      await runtime.send({ ...request, command });
+      await runtime.send({ ...request, command: runtimeCommand });
       events.push(...this.drainEvents(agentId));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       pushLogEvent(events, this.store, agentId, message);
+      this.store.recordApiCall(agentId, "error");
       const failed = this.store.update(agentId, {
         status: "error",
         currentTask: message,
@@ -138,6 +187,65 @@ export class AgentSupervisor {
 
     this.broadcast(events);
     return events;
+  }
+
+  private async handleDashboardSlashCommand(
+    agentId: string,
+    slash: DashboardSlashCommand,
+  ): Promise<AgentEvent[]> {
+    const events: AgentEvent[] = [agentEvent(agentId, "command", slash.raw)];
+
+    if (slash.kind === "error") {
+      events.push(agentEvent(agentId, "error", slash.message));
+      return events;
+    }
+
+    if (slash.kind === "clear") {
+      pushLogEvent(events, this.store, agentId, "[slash] local logs cleared");
+      return events;
+    }
+
+    if (slash.kind === "model") {
+      const updated = this.store.update(agentId, { model: slash.value });
+      pushAgentUpdated(events, updated);
+      if (updated) this.runtimes.get(agentId)?.configure?.(updated);
+      pushLogEvent(events, this.store, agentId, `[slash] model set to ${slash.value}`);
+      return events;
+    }
+
+    const wasRunning = await this.stopRuntimeForRestart(agentId, events);
+    const patch: Partial<AgentSnapshot> =
+      slash.kind === "dir"
+        ? { workspacePath: slash.value }
+        : slash.kind === "resume"
+          ? { sessionId: slash.value }
+          : { sessionId: null };
+    const updated = this.store.update(agentId, patch);
+    pushAgentUpdated(events, updated);
+
+    const message =
+      slash.kind === "dir"
+        ? `[slash] workspace path set to ${slash.value}`
+        : slash.kind === "resume"
+          ? `[slash] session id set to ${slash.value}`
+          : "[slash] session id cleared";
+    pushLogEvent(events, this.store, agentId, message);
+
+    if (wasRunning) {
+      events.push(...(await this.startAgentInternal(agentId)));
+    }
+
+    return events;
+  }
+
+  private async stopRuntimeForRestart(agentId: string, events: AgentEvent[]): Promise<boolean> {
+    const runtime = this.runtimes.get(agentId);
+    if (!runtime) return false;
+    this.settleAllApprovals(agentId, "deny");
+    await runtime.stop();
+    this.runtimes.delete(agentId);
+    events.push(...this.drainEvents(agentId));
+    return true;
   }
 
   async stopAgent(agentId: string): Promise<AgentEvent[]> {
@@ -152,6 +260,7 @@ export class AgentSupervisor {
     const runtime = this.runtimes.get(agentId);
 
     if (runtime) {
+      this.settleAllApprovals(agentId, "deny");
       await runtime.stop();
       this.runtimes.delete(agentId);
       events.push(...this.drainEvents(agentId));
@@ -166,6 +275,40 @@ export class AgentSupervisor {
     return events;
   }
 
+  async pauseAgent(agentId: string): Promise<AgentEvent[]> {
+    const agent = this.store.get(agentId);
+    if (!agent) {
+      const events = [agentEvent(agentId, "error", "Agent not found")];
+      this.broadcast(events);
+      return events;
+    }
+
+    const events: AgentEvent[] = [];
+    await this.stopRuntimeForRestart(agentId, events);
+    const updated = this.store.update(agentId, {
+      status: "paused",
+      currentTask: null,
+    });
+    pushAgentUpdated(events, updated);
+    this.broadcast(events);
+    return events;
+  }
+
+  async restartAgent(agentId: string): Promise<AgentEvent[]> {
+    const agent = this.store.get(agentId);
+    if (!agent) {
+      const events = [agentEvent(agentId, "error", "Agent not found")];
+      this.broadcast(events);
+      return events;
+    }
+
+    const events: AgentEvent[] = [];
+    await this.stopRuntimeForRestart(agentId, events);
+    events.push(...(await this.startAgentInternal(agentId)));
+    this.broadcast(events);
+    return events;
+  }
+
   async deleteAgent(agentId: string): Promise<AgentEvent[]> {
     const agent = this.store.get(agentId);
     if (!agent) {
@@ -176,6 +319,7 @@ export class AgentSupervisor {
 
     const runtime = this.runtimes.get(agentId);
     if (runtime) {
+      this.settleAllApprovals(agentId, "deny");
       await runtime.stop();
       this.runtimes.delete(agentId);
     }
@@ -184,6 +328,78 @@ export class AgentSupervisor {
     const events: AgentEvent[] = [agentEvent(agentId, "deleted", "Agent deleted")];
     this.broadcast(events);
     return events;
+  }
+
+  /**
+   * Resolve a pending runtime approval with the user's decision.
+   * Returns false when the approval is unknown (already resolved/timed out).
+   */
+  respondToApproval(
+    agentId: string,
+    approvalId: string,
+    decision: ApprovalDecision,
+  ): boolean {
+    const pending = this.pendingApprovals.get(agentId)?.get(approvalId);
+    if (!pending) return false;
+    this.settleApproval(agentId, approvalId, pending, decision);
+    return true;
+  }
+
+  private registerApproval(agentId: string, req: RuntimeApprovalRequest): Promise<ApprovalDecision> {
+    return new Promise<ApprovalDecision>((resolve) => {
+      const timer = setTimeout(() => {
+        const pending = this.pendingApprovals.get(agentId)?.get(req.approvalId);
+        if (!pending) return;
+        this.bufferLog(
+          agentId,
+          `[approval] ${req.approvalId} unanswered after ${this.approvalTimeoutMs}ms — falling back to allow`,
+        );
+        this.settleApproval(agentId, req.approvalId, pending, "allow");
+      }, this.approvalTimeoutMs);
+      timer.unref?.();
+
+      const byAgent = this.pendingApprovals.get(agentId) ?? new Map<string, PendingApproval>();
+      byAgent.set(req.approvalId, { resolve, timer });
+      this.pendingApprovals.set(agentId, byAgent);
+
+      this.bufferEvent(
+        agentId,
+        agentEvent(agentId, "approvalRequest", req.summary, undefined, {
+          approvalId: req.approvalId,
+          approvalKind: req.kind,
+          approvalSummary: req.summary,
+          approvalDetails: req.details,
+        }),
+      );
+    });
+  }
+
+  private settleApproval(
+    agentId: string,
+    approvalId: string,
+    pending: PendingApproval,
+    decision: ApprovalDecision,
+  ) {
+    clearTimeout(pending.timer);
+    const byAgent = this.pendingApprovals.get(agentId);
+    byAgent?.delete(approvalId);
+    if (byAgent && byAgent.size === 0) this.pendingApprovals.delete(agentId);
+    pending.resolve(decision);
+    this.bufferEvent(
+      agentId,
+      agentEvent(agentId, "approvalResolved", `approval ${decision}`, undefined, {
+        approvalId,
+        approvalDecision: decision,
+      }),
+    );
+  }
+
+  private settleAllApprovals(agentId: string, decision: ApprovalDecision) {
+    const byAgent = this.pendingApprovals.get(agentId);
+    if (!byAgent) return;
+    for (const [approvalId, pending] of [...byAgent]) {
+      this.settleApproval(agentId, approvalId, pending, decision);
+    }
   }
 
   private buildStartOptions(agentId: string, agent: AgentSnapshot) {
@@ -202,6 +418,8 @@ export class AgentSupervisor {
       onError: (error: Error) => {
         this.runtimes.delete(agentId);
         this.bufferLog(agentId, error.message);
+        // Count the failed call; the snapshot below carries the new apiCalls.
+        this.store.recordApiCall(agentId, "error");
         const failed = this.store.update(agentId, {
           status: "error",
           currentTask: error.message,
@@ -306,9 +524,23 @@ export class AgentSupervisor {
           }),
         );
       },
-      onTurnComplete: () => {
-        this.bufferEvent(agentId, agentEvent(agentId, "turnComplete", "turn complete"));
+      onUsage: (usage: RuntimeUsage) => {
+        const updated = this.store.applyUsage(agentId, usage);
+        this.bufferAgentUpdated(agentId, updated);
       },
+      onTurnComplete: () => {
+        const recorded = this.store.recordApiCall(agentId, "success");
+        const updated = recorded
+          ? this.store.update(agentId, {
+              status: "running",
+              currentTask: null,
+              tasksCompleted: recorded.tasksCompleted + 1,
+            })
+          : undefined;
+        this.bufferAgentUpdated(agentId, updated ?? recorded);
+        this.bufferEvent(agentId, agentEvent(agentId, "turnComplete", "turn complete", updated ?? recorded));
+      },
+      onApprovalRequest: (req: RuntimeApprovalRequest) => this.registerApproval(agentId, req),
     };
   }
 
@@ -382,6 +614,63 @@ function agentEvent(
     payload,
     createdAt: new Date().toISOString(),
   };
+}
+
+function parseDashboardSlashCommand(command: string): DashboardSlashCommand | null {
+  if (!command.startsWith("/")) return null;
+  const [name = "", ...rest] = command.split(/\s+/);
+  const value = rest.join(" ").trim();
+
+  switch (name) {
+    case "/clear":
+      return { kind: "clear", raw: command };
+    case "/model":
+      return value
+        ? { kind: "model", raw: command, value }
+        : { kind: "error", raw: command, message: "Usage: /model <name>" };
+    case "/dir":
+      return value
+        ? { kind: "dir", raw: command, value }
+        : { kind: "error", raw: command, message: "Usage: /dir <path>" };
+    case "/resume":
+      return value
+        ? { kind: "resume", raw: command, value }
+        : { kind: "error", raw: command, message: "Usage: /resume <sessionId>" };
+    case "/new-session":
+      return { kind: "new-session", raw: command };
+    default:
+      return null;
+  }
+}
+
+function buildRuntimeCommand(
+  command: string,
+  attachments: NonNullable<AgentCommandRequest["attachments"]>,
+): string {
+  if (attachments.length === 0) return command;
+  const rendered = attachments.map((attachment, index) => {
+    const content = attachment.content
+      ? attachment.content.slice(0, MAX_ATTACHMENT_CONTENT_CHARS)
+      : "[content not provided]";
+    const truncated =
+      attachment.content && attachment.content.length > MAX_ATTACHMENT_CONTENT_CHARS
+        ? "\n[truncated by server]"
+        : "";
+    return [
+      `Attachment ${index + 1}: ${attachment.name}`,
+      `MIME: ${attachment.mimeType}`,
+      `Size: ${attachment.size} bytes`,
+      `Encoding: ${attachment.encoding ?? "metadata-only"}`,
+      "Content:",
+      content + truncated,
+    ].join("\n");
+  });
+  return [
+    command,
+    "",
+    "Attached files are provided below. Use their contents as part of the user's request.",
+    ...rendered,
+  ].join("\n");
 }
 
 function appendMessage(

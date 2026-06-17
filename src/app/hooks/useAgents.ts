@@ -16,9 +16,51 @@ import {
   type AgentEvent,
   type AgentMessage,
   type AgentSocket,
+  type ApprovalDecision,
 } from "../lib/agentSocket";
 
 export type ConnectionState = "offline" | "connecting" | "connected" | "error";
+
+export interface PendingApproval {
+  approvalId: string;
+  kind: string;
+  summary: string;
+  details?: string;
+}
+
+export type PendingApprovalsByAgent = Record<string, PendingApproval[]>;
+
+function applyApprovalEvent(
+  current: PendingApprovalsByAgent,
+  event: AgentEvent,
+): PendingApprovalsByAgent {
+  if (event.type === "agent.approval.request") {
+    const existing = current[event.agentId] ?? [];
+    if (existing.some((a) => a.approvalId === event.approvalId)) return current;
+    return {
+      ...current,
+      [event.agentId]: [
+        ...existing,
+        {
+          approvalId: event.approvalId,
+          kind: event.kind,
+          summary: event.summary,
+          details: event.details,
+        },
+      ],
+    };
+  }
+  if (event.type === "agent.approval.resolved" || event.type === "agent.deleted") {
+    const existing = current[event.agentId];
+    if (!existing || existing.length === 0) return current;
+    const next =
+      event.type === "agent.deleted"
+        ? []
+        : existing.filter((a) => a.approvalId !== event.approvalId);
+    return { ...current, [event.agentId]: next };
+  }
+  return current;
+}
 
 function timestamp() {
   return new Date().toLocaleTimeString([], {
@@ -190,15 +232,17 @@ function applyAgentEvent(current: AgentSnapshot[], event: AgentEvent): AgentSnap
   }
 }
 
-export function useAgents(config: ApiConfig | null, fallbackAgents: AgentSnapshot[]) {
-  const [agents, setAgents] = useState<AgentSnapshot[]>(fallbackAgents);
+export function useAgents(config: ApiConfig | null) {
+  const [agents, setAgents] = useState<AgentSnapshot[]>([]);
   const [socket, setSocket] = useState<AgentSocket | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("offline");
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalsByAgent>({});
 
   useEffect(() => {
     if (!config) {
       setSocket(null);
-      setAgents(fallbackAgents);
+      setAgents([]);
+      setPendingApprovals({});
       setConnectionState("offline");
       return;
     }
@@ -217,7 +261,9 @@ export function useAgents(config: ApiConfig | null, fallbackAgents: AgentSnapsho
 
     const nextSocket = openAgentSocket(config, {
       onEvent: (event) => {
-        if (!cancelled) setAgents((current) => applyAgentEvent(current, event));
+        if (cancelled) return;
+        setAgents((current) => applyAgentEvent(current, event));
+        setPendingApprovals((current) => applyApprovalEvent(current, event));
       },
       onStateChange: (state) => {
         if (cancelled) return;
@@ -234,7 +280,7 @@ export function useAgents(config: ApiConfig | null, fallbackAgents: AgentSnapsho
       nextSocket.close();
       setSocket(null);
     };
-  }, [config?.serverUrl, config?.apiKey, fallbackAgents]);
+  }, [config?.serverUrl, config?.apiKey]);
 
   const sendCommand = useCallback(
     (agentId: string, payload: AgentCommandRequest) => {
@@ -284,6 +330,50 @@ export function useAgents(config: ApiConfig | null, fallbackAgents: AgentSnapsho
     [socket, config],
   );
 
+  const pauseAgent = useCallback(
+    (agentId: string) => {
+      setAgents((current) =>
+        current.map((agent) =>
+          agent.id === agentId
+            ? appendLogs(agent, [`[${timestamp()}] Pause requested`])
+            : agent,
+        ),
+      );
+      socket?.pauseAgent(agentId);
+    },
+    [socket, config],
+  );
+
+  const restartAgent = useCallback(
+    (agentId: string) => {
+      setAgents((current) =>
+        current.map((agent) =>
+          agent.id === agentId
+            ? appendLogs(agent, [`[${timestamp()}] Restart requested`])
+            : agent,
+        ),
+      );
+      socket?.restartAgent(agentId);
+    },
+    [socket, config],
+  );
+
+  const respondToApproval = useCallback(
+    (agentId: string, approvalId: string, decision: ApprovalDecision) => {
+      // Optimistically clear the banner; the server echoes agent.approval.resolved.
+      setPendingApprovals((current) => {
+        const existing = current[agentId];
+        if (!existing || existing.length === 0) return current;
+        return {
+          ...current,
+          [agentId]: existing.filter((a) => a.approvalId !== approvalId),
+        };
+      });
+      socket?.respondToApproval(agentId, approvalId, decision);
+    },
+    [socket],
+  );
+
   const createAgent = useCallback(
     async (request: CreateAgentRequest) => {
       if (!config) throw new Error("Not connected to a server");
@@ -310,12 +400,28 @@ export function useAgents(config: ApiConfig | null, fallbackAgents: AgentSnapsho
     () => ({
       agents,
       connectionState,
+      pendingApprovals,
       sendCommand,
       startAgent,
+      pauseAgent,
+      restartAgent,
       stopAgent,
+      respondToApproval,
       createAgent,
       removeAgent,
     }),
-    [agents, connectionState, sendCommand, startAgent, stopAgent, createAgent, removeAgent],
+    [
+      agents,
+      connectionState,
+      pendingApprovals,
+      sendCommand,
+      startAgent,
+      pauseAgent,
+      restartAgent,
+      stopAgent,
+      respondToApproval,
+      createAgent,
+      removeAgent,
+    ],
   );
 }
