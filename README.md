@@ -43,11 +43,19 @@ pnpm dev
 
 # 或者一起跑
 pnpm dev:full
+
+# Tauri 桌面 app（server 仍然独立运行）
+pnpm tauri:dev
+
+# 生成 macOS app / dmg
+pnpm tauri:build
 ```
 
 打开前端后进入 Settings 页：
 - Server URL: `http://localhost:8787`
 - API Key: `dev-api-key`（可被环境变量覆盖）
+
+Tauri 只是客户端壳，不内嵌后端服务。桌面 app 默认连接 `http://localhost:8787`，也可以在 Settings 里改成远程 server 地址。
 
 ### 环境变量
 

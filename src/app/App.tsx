@@ -15,6 +15,7 @@ export type Agent = AgentSnapshot;
 
 const SETTINGS_KEY = "coding-agents-dashboard:server-settings";
 const SERVER_URL_PATTERN = /^https?:\/\/.+/i;
+const LOCAL_SERVER_URL = "http://localhost:8787";
 
 const INITIAL_AGENTS: AgentSnapshot[] = [
   {
@@ -151,11 +152,26 @@ const INITIAL_AGENTS: AgentSnapshot[] = [
   },
 ];
 
-function loadApiConfig(): ApiConfig {
-  const defaultConfig: ApiConfig = {
-    serverUrl: `${window.location.protocol}//${window.location.host}`,
+function isTauriRuntime(): boolean {
+  return (
+    "__TAURI_INTERNALS__" in window ||
+    window.location.hostname === "tauri.localhost" ||
+    window.location.protocol === "tauri:" ||
+    window.location.protocol === "asset:"
+  );
+}
+
+function getDefaultApiConfig(): ApiConfig {
+  return {
+    serverUrl: isTauriRuntime()
+      ? LOCAL_SERVER_URL
+      : `${window.location.protocol}//${window.location.host}`,
     apiKey: "dev-api-key",
   };
+}
+
+function loadApiConfig(): ApiConfig {
+  const defaultConfig = getDefaultApiConfig();
 
   try {
     const stored = window.localStorage.getItem(SETTINGS_KEY);
@@ -171,22 +187,22 @@ function loadApiConfig(): ApiConfig {
       return defaultConfig;
     }
 
-    // If stored URL points to a different port on localhost, prefer same-origin
-    // (the vite proxy handles routing to the backend)
-    try {
-      const storedUrl = new URL(parsed.serverUrl.trim());
-      const currentHost = window.location.host;
-      if (
-        storedUrl.hostname === "localhost" ||
-        storedUrl.hostname === "127.0.0.1"
-      ) {
-        if (storedUrl.host !== currentHost) {
-          return defaultConfig;
+    if (!isTauriRuntime()) {
+      // In browser dev, prefer same-origin so Vite can proxy to the API server.
+      try {
+        const storedUrl = new URL(parsed.serverUrl.trim());
+        const currentHost = window.location.host;
+        if (
+          storedUrl.hostname === "localhost" ||
+          storedUrl.hostname === "127.0.0.1"
+        ) {
+          if (storedUrl.host !== currentHost) {
+            return defaultConfig;
+          }
         }
+      } catch {
+        return defaultConfig;
       }
-    } catch {
-      // URL parse failed, use default
-      return defaultConfig;
     }
 
     return {
@@ -228,10 +244,7 @@ export default function App() {
   };
 
   const handleSettingsSaved = (settings: StoredServerSettings) => {
-    const defaultConfig: ApiConfig = {
-      serverUrl: `${window.location.protocol}//${window.location.host}`,
-      apiKey: "dev-api-key",
-    };
+    const defaultConfig = getDefaultApiConfig();
     setApiConfig(
       settings.autoConnect &&
         SERVER_URL_PATTERN.test(settings.serverUrl.trim()) &&
