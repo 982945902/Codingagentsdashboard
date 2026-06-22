@@ -77,6 +77,9 @@ pnpm tauri:dev
 
 # 生成 macOS app / dmg
 pnpm tauri:build
+
+# Android app（server 仍然独立运行）
+pnpm tauri:android:build
 ```
 
 打开前端后进入 Settings 页：
@@ -84,6 +87,7 @@ pnpm tauri:build
 - API Key: `dev-api-key`（可被环境变量覆盖）
 
 Tauri 只是客户端壳，不内嵌后端服务。桌面 app 默认连接 `http://localhost:8787`，也可以在 Settings 里改成远程 server 地址。
+Android 模拟器默认连接 `http://10.0.2.2:8787`；真机需要在 Settings 里改成可访问的局域网或公网 server 地址。
 
 ### 环境变量
 

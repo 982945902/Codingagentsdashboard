@@ -21,6 +21,7 @@ export type Agent = AgentSnapshot;
 const SETTINGS_KEY = "coding-agents-dashboard:server-settings";
 const SERVER_URL_PATTERN = /^https?:\/\/.+/i;
 const LOCAL_SERVER_URL = "http://localhost:8787";
+const ANDROID_EMULATOR_SERVER_URL = "http://10.0.2.2:8787";
 
 function isTauriRuntime(): boolean {
   return (
@@ -32,10 +33,15 @@ function isTauriRuntime(): boolean {
 }
 
 function getDefaultApiConfig(): ApiConfig {
+  const isAndroidTauri =
+    isTauriRuntime() && /Android/i.test(window.navigator.userAgent);
+
   return {
-    serverUrl: isTauriRuntime()
-      ? LOCAL_SERVER_URL
-      : `${window.location.protocol}//${window.location.host}`,
+    serverUrl: isAndroidTauri
+      ? ANDROID_EMULATOR_SERVER_URL
+      : isTauriRuntime()
+        ? LOCAL_SERVER_URL
+        : `${window.location.protocol}//${window.location.host}`,
     apiKey: "dev-api-key",
   };
 }

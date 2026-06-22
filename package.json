@@ -15,7 +15,9 @@
     "build:server": "bunx tsc -p tsconfig.server.json --noEmit",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:android:dev": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri android dev",
+    "tauri:android:build": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri android build"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
