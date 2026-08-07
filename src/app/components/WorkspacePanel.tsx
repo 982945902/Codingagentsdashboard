@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Agent } from "../App";
 import type { DeliveryBehavior } from "../lib/api";
 import type { AgentCommandAttachment, ApprovalDecision } from "../lib/agentSocket";
@@ -134,10 +134,34 @@ export function WorkspacePanel({
   const [logsCollapsed, setLogsCollapsed] = useState(true);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const autoFollowRef = useRef(true);
+  const activeAgentRef = useRef(agent.id);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  const scrollToLatest = (behavior: ScrollBehavior = "auto") => {
+    const element = chatScrollRef.current;
+    if (!element) return;
+    element.scrollTo({ top: element.scrollHeight, behavior });
+    autoFollowRef.current = true;
+    setShowJumpToLatest(false);
+  };
+
+  useEffect(() => {
+    if (activeAgentRef.current !== agent.id) {
+      activeAgentRef.current = agent.id;
+      autoFollowRef.current = true;
+    }
+    const frame = requestAnimationFrame(() => {
+      if (autoFollowRef.current) scrollToLatest();
+      else setShowJumpToLatest(true);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [agent.id, agent.messages]);
 
   const SLASH_COMMANDS = [
     { name: "/clear", hint: "Clear local logs panel", description: "Clears the collapsible logs view (does not delete server history)." },
@@ -519,7 +543,19 @@ export function WorkspacePanel({
             </span>
           </div>
 
-          <div className="flex-1 bg-background overflow-y-auto p-3 lg:p-4 space-y-3">
+          <div className="relative flex-1 min-h-0">
+            <div
+              ref={chatScrollRef}
+              onScroll={(event) => {
+                const element = event.currentTarget;
+                const distanceFromBottom =
+                  element.scrollHeight - element.scrollTop - element.clientHeight;
+                const following = distanceFromBottom < 80;
+                autoFollowRef.current = following;
+                if (following) setShowJumpToLatest(false);
+              }}
+              className="h-full bg-background overflow-y-auto p-3 lg:p-4 space-y-3"
+            >
             {(!agent.messages || agent.messages.length === 0) ? (
               <div className="text-muted-foreground text-sm italic">
                 No messages yet. Send a command below to start a conversation.
@@ -605,6 +641,16 @@ export function WorkspacePanel({
                   </div>
                 );
               })
+              )}
+            </div>
+            {showJumpToLatest && (
+              <button
+                type="button"
+                onClick={() => scrollToLatest("smooth")}
+                className="absolute bottom-3 right-4 z-10 rounded-full border border-border bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-lg hover:opacity-90"
+              >
+                Jump to latest
+              </button>
             )}
           </div>
 
