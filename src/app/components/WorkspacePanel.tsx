@@ -401,9 +401,9 @@ export function WorkspacePanel({
   };
 
   const quickActions = agent.controlMode === "attached"
-    ? [
-        { icon: XCircle, label: "Abort", cmd: "abort" },
-      ]
+    ? agent.capabilities?.abort === false
+      ? []
+      : [{ icon: XCircle, label: "Abort", cmd: "abort" }]
     : [
         { icon: PlayCircle, label: "Start", cmd: "start" },
         { icon: PauseCircle, label: "Pause", cmd: "pause" },
@@ -830,7 +830,9 @@ export function WorkspacePanel({
                 <Mic className="w-4 h-4" />
               </button>
 
-              {agent.controlMode === "attached" && (
+              {agent.controlMode === "attached" &&
+                (agent.capabilities?.steer !== false ||
+                  agent.capabilities?.followUp !== false) && (
                 <select
                   value={delivery}
                   onChange={(event) => setDelivery(event.target.value as DeliveryBehavior)}
@@ -838,8 +840,12 @@ export function WorkspacePanel({
                   title="Delivery while Pi is busy"
                 >
                   <option value="auto">Auto</option>
-                  <option value="steer">Steer</option>
-                  <option value="followUp">Follow-up</option>
+                  {agent.capabilities?.steer !== false && (
+                    <option value="steer">Steer</option>
+                  )}
+                  {agent.capabilities?.followUp !== false && (
+                    <option value="followUp">Follow-up</option>
+                  )}
                 </select>
               )}
 

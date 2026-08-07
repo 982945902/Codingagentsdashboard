@@ -2,15 +2,19 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-BUN_BIN=$(command -v bun || true)
-if [[ -z "$BUN_BIN" ]]; then
-  echo "bun is required" >&2
-  exit 1
-fi
+for command in bun openssl python3; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "$command is required" >&2
+    exit 1
+  fi
+done
+BUN_BIN=$(command -v bun)
 
 CONFIG_DIR="$HOME/.config/coding-agents-dashboard"
 UNIT_DIR="$HOME/.config/systemd/user"
+umask 077
 mkdir -p "$CONFIG_DIR" "$UNIT_DIR"
+chmod 700 "$CONFIG_DIR"
 
 if [[ ! -f "$CONFIG_DIR/env" ]]; then
   API_KEY=$(openssl rand -hex 24)
@@ -21,6 +25,11 @@ PI_BRIDGE_TOKEN=$BRIDGE_TOKEN
 PERSISTENCE_PATH=$ROOT/.data/agents.json
 EOF
 chmod 600 "$CONFIG_DIR/env"
+fi
+
+if ! grep -q '^PI_BRIDGE_TOKEN=' "$CONFIG_DIR/env"; then
+  printf 'PI_BRIDGE_TOKEN=%s\n' "$(openssl rand -hex 24)" >>"$CONFIG_DIR/env"
+  chmod 600 "$CONFIG_DIR/env"
 fi
 
 set -a

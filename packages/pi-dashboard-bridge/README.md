@@ -5,7 +5,7 @@ Pi extension that attaches a live Pi TUI session to Coding Agents Dashboard. The
 ## Install
 
 ```bash
-pi install /path/to/Codingagentsdashboard/packages/pi-dashboard-bridge
+pi install ./packages/pi-dashboard-bridge
 ```
 
 Restart Pi or run `/reload`.

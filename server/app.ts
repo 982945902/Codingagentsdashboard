@@ -179,7 +179,7 @@ export function createApp(options: AppOptions = {}): BunApp {
                   : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength),
               );
         if (ws.data.channel === "pi") {
-          void piBridgeManager.handleMessage(ws, text);
+          piBridgeManager.dispatch(ws, text);
           return;
         }
         if (!ws.data.authenticated) {

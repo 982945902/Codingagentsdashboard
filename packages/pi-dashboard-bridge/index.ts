@@ -33,6 +33,11 @@ const DEFAULT_URL = "ws://127.0.0.1:8787/ws/bridges/pi";
 const DEFAULT_TOKEN = "dev-api-key";
 const RECONNECT_MAX_MS = 30_000;
 
+function isLoopbackHost(value: string): boolean {
+  const host = value.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
 function loadConfig(): Required<BridgeConfig> {
   let fileConfig: BridgeConfig = {};
   try {
@@ -42,12 +47,23 @@ function loadConfig(): Required<BridgeConfig> {
   } catch {
     // Missing config is expected for local defaults.
   }
-  return {
+  const explicitToken = process.env.PI_DASHBOARD_TOKEN || fileConfig.token;
+  const resolved = {
     enabled: fileConfig.enabled ?? true,
     url: process.env.PI_DASHBOARD_URL || fileConfig.url || DEFAULT_URL,
-    token: process.env.PI_DASHBOARD_TOKEN || fileConfig.token || DEFAULT_TOKEN,
+    token: explicitToken || DEFAULT_TOKEN,
     hostId: process.env.PI_DASHBOARD_HOST_ID || fileConfig.hostId || hostname(),
   };
+  const url = new URL(resolved.url);
+  if (!isLoopbackHost(url.hostname)) {
+    if (!explicitToken || resolved.token === DEFAULT_TOKEN) {
+      throw new Error("PI_DASHBOARD_TOKEN must be explicitly configured for a remote dashboard");
+    }
+    if (url.protocol !== "wss:") {
+      throw new Error("Remote Pi dashboard connections must use wss://");
+    }
+  }
+  return resolved;
 }
 
 function iso(timestamp: unknown): string {
@@ -157,7 +173,9 @@ export default function piDashboardBridge(pi: ExtensionAPI) {
   let stopped = false;
   let sequence = 0;
   let currentUserId: string | null = null;
+  let currentUserText = "";
   let currentAssistantId: string | null = null;
+  let currentAssistantText = "";
   let lastAssistantId: string | null = null;
   const toolOwners = new Map<string, string>();
 
@@ -193,7 +211,7 @@ export default function piDashboardBridge(pi: ExtensionAPI) {
 
   function register(): void {
     if (!ctx) return;
-    send({
+    const registered = send({
       type: "pi.register",
       version: 1,
       token: config.token,
@@ -217,6 +235,35 @@ export default function piDashboardBridge(pi: ExtensionAPI) {
       },
       snapshot: makeSnapshot(),
     });
+    if (!registered) return;
+    if (currentUserId) {
+      sendEvent({
+        kind: "message.start",
+        message: {
+          id: currentUserId,
+          role: "user",
+          content: currentUserText,
+          format: "text",
+          streaming: false,
+          toolCalls: [],
+          createdAt: new Date().toISOString(),
+        },
+      });
+    }
+    if (currentAssistantId) {
+      sendEvent({
+        kind: "message.start",
+        message: {
+          id: currentAssistantId,
+          role: "assistant",
+          content: currentAssistantText,
+          format: "markdown",
+          streaming: true,
+          toolCalls: [],
+          createdAt: new Date().toISOString(),
+        },
+      });
+    }
   }
 
   function updateUi(connected: boolean): void {
@@ -368,9 +415,12 @@ export default function piDashboardBridge(pi: ExtensionAPI) {
     const message: any = event.message;
     if (message.role !== "user" && message.role !== "assistant") return;
     const id = messageId(message, `-${sequence}`);
-    if (message.role === "user") currentUserId = id;
-    else {
+    if (message.role === "user") {
+      currentUserId = id;
+      currentUserText = textOf(message.content);
+    } else {
       currentAssistantId = id;
+      currentAssistantText = "";
       lastAssistantId = id;
     }
     sendEvent({
@@ -378,7 +428,7 @@ export default function piDashboardBridge(pi: ExtensionAPI) {
       message: {
         id,
         role: message.role,
-        content: message.role === "user" ? textOf(message.content) : "",
+        content: message.role === "user" ? currentUserText : "",
         format: message.role === "user" ? "text" : "markdown",
         streaming: message.role === "assistant",
         toolCalls: [],
@@ -391,7 +441,9 @@ export default function piDashboardBridge(pi: ExtensionAPI) {
     ctx = eventCtx;
     const delta: any = event.assistantMessageEvent;
     if (delta?.type === "text_delta" && currentAssistantId) {
-      sendEvent({ kind: "message.delta", messageId: currentAssistantId, delta: String(delta.delta || "") });
+      const text = String(delta.delta || "");
+      currentAssistantText += text;
+      sendEvent({ kind: "message.delta", messageId: currentAssistantId, delta: text });
     }
   });
 
@@ -413,10 +465,13 @@ export default function piDashboardBridge(pi: ExtensionAPI) {
         createdAt: iso(message.timestamp),
       },
     });
-    if (message.role === "user") currentUserId = null;
-    else {
+    if (message.role === "user") {
+      currentUserId = null;
+      currentUserText = "";
+    } else {
       lastAssistantId = id;
       currentAssistantId = null;
+      currentAssistantText = "";
       const usage = message.usage;
       if (usage) {
         sendEvent({

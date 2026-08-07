@@ -138,6 +138,15 @@ describe("Pi bridge manager", () => {
     expect(store.get(agent.id)?.status).toBe("paused");
   });
 
+  it("rejects managed lifecycle controls for attached sessions", async () => {
+    const { supervisor, store, agent } = await setup();
+    expect((await supervisor.startAgent(agent.id))[0]?.type).toBe("error");
+    expect((await supervisor.pauseAgent(agent.id))[0]?.type).toBe("error");
+    expect((await supervisor.restartAgent(agent.id))[0]?.type).toBe("error");
+    expect((await supervisor.stopAgent(agent.id))[0]?.type).toBe("error");
+    expect(store.get(agent.id)?.connectionStatus).toBe("online");
+  });
+
   it("rejects an invalid bridge token", async () => {
     const store = createAgentStore();
     const manager = new PiBridgeManager(store, new AgentSupervisor(store), "bridge-secret");

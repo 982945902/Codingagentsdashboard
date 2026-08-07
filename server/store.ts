@@ -144,6 +144,9 @@ export function createAgentStore(
     },
     create: (request) => {
       const parsed = createAgentSchema.parse(request);
+      if (parsed.runtimeKind === "pi" || parsed.controlMode === "attached") {
+        throw new Error("Attached Pi runtimes must register through the Pi bridge");
+      }
       const createdAt = new Date().toISOString();
       const agent: AgentSnapshot = {
         id: `agent-${crypto.randomUUID().slice(0, 8)}`,

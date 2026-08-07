@@ -167,6 +167,17 @@ describe("agent store", () => {
     expect(store.recordApiCall("missing", "success")).toBeUndefined();
   });
 
+  it("rejects attached Pi agents from the normal creation path", () => {
+    const store = createAgentStore();
+    expect(() => store.create({
+      name: "Invalid Pi",
+      runtimeKind: "pi",
+      controlMode: "attached",
+      workspacePath: "/tmp/pi",
+      model: "pi",
+    })).toThrow(/Pi bridge/);
+  });
+
   it("persists snapshots to disk and restores them", () => {
     const path = join(tmpDir, "agents.json");
     const initial = createAgentStore({ seed: [], persistencePath: path });

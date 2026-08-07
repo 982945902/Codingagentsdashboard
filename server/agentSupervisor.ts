@@ -85,6 +85,8 @@ export class AgentSupervisor {
   ): Promise<AgentEvent[]> {
     const agent = this.store.get(agentId);
     if (!agent) return [agentEvent(agentId, "error", "Agent not found")];
+    const previous = this.runtimes.get(agentId);
+    if (previous && previous !== runtime) await previous.stop();
     this.runtimes.set(agentId, runtime);
     const events: AgentEvent[] = [];
     try {
@@ -131,13 +133,26 @@ export class AgentSupervisor {
       this.broadcast(events);
       return events;
     }
-    await runtime.abort();
+    try {
+      await runtime.abort();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const events = [agentEvent(agentId, "error", message)];
+      this.broadcast(events);
+      return events;
+    }
     const events = [agentEvent(agentId, "log", "Abort requested")];
     this.broadcast(events);
     return events;
   }
 
   async startAgent(agentId: string): Promise<AgentEvent[]> {
+    const agent = this.store.get(agentId);
+    if (agent?.controlMode === "attached") {
+      const events = [agentEvent(agentId, "error", "Attached Pi sessions start from the TUI")];
+      this.broadcast(events);
+      return events;
+    }
     const events = await this.startAgentInternal(agentId);
     this.broadcast(events);
     return events;
@@ -256,6 +271,16 @@ export class AgentSupervisor {
       await runtime.send({ ...request, command: runtimeCommand });
       events.push(...this.drainEvents(agentId));
     } catch (error) {
+      if (this.runtimes.get(agentId) !== runtime) {
+        pushLogEvent(
+          events,
+          this.store,
+          agentId,
+          "Command interrupted while the attached runtime reconnected",
+        );
+        this.broadcast(events);
+        return events;
+      }
       const message = error instanceof Error ? error.message : String(error);
       pushLogEvent(events, this.store, agentId, message);
       this.store.recordApiCall(agentId, "error");
@@ -337,6 +362,17 @@ export class AgentSupervisor {
       this.broadcast(events);
       return events;
     }
+    if (agent.controlMode === "attached") {
+      const events = [
+        agentEvent(
+          agentId,
+          "error",
+          "Attached Pi sessions cannot be stopped from the dashboard; use abort or close the TUI",
+        ),
+      ];
+      this.broadcast(events);
+      return events;
+    }
 
     const events: AgentEvent[] = [];
     const runtime = this.runtimes.get(agentId);
@@ -365,6 +401,13 @@ export class AgentSupervisor {
       this.broadcast(events);
       return events;
     }
+    if (agent.controlMode === "attached") {
+      const events = [
+        agentEvent(agentId, "error", "Attached Pi sessions cannot be paused from the dashboard"),
+      ];
+      this.broadcast(events);
+      return events;
+    }
 
     const events: AgentEvent[] = [];
     await this.stopRuntimeForRestart(agentId, events);
@@ -382,6 +425,17 @@ export class AgentSupervisor {
     const agent = this.store.get(agentId);
     if (!agent) {
       const events = [agentEvent(agentId, "error", "Agent not found")];
+      this.broadcast(events);
+      return events;
+    }
+    if (agent.controlMode === "attached") {
+      const events = [
+        agentEvent(
+          agentId,
+          "error",
+          "Attached Pi sessions reconnect from the TUI and cannot be restarted from the dashboard",
+        ),
+      ];
       this.broadcast(events);
       return events;
     }

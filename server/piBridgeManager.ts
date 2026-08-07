@@ -28,15 +28,46 @@ function agentIdFor(hostId: string, sessionId: string): string {
   return `agent-pi-${digest}`;
 }
 
+function mergeMessages(
+  existing: AgentSnapshot["messages"],
+  incoming: AgentSnapshot["messages"],
+): AgentSnapshot["messages"] {
+  const byId = new Map(existing.map((message) => [message.id, message]));
+  for (const message of incoming) byId.set(message.id, message);
+  return [...byId.values()]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .slice(-200);
+}
+
 export class PiBridgeManager {
   private readonly peersBySocket = new Map<PiBridgeSocket, Peer>();
   private readonly peersByKey = new Map<string, Peer>();
+  private readonly dispatchQueues = new Map<PiBridgeSocket, Promise<void>>();
 
   constructor(
     private readonly store: AgentStore,
     private readonly supervisor: AgentSupervisor,
     private readonly token: string,
   ) {}
+
+  dispatch(socket: PiBridgeSocket, raw: string): void {
+    const previous = this.dispatchQueues.get(socket) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.handleMessage(socket, raw));
+    this.dispatchQueues.set(socket, next);
+    void next
+      .catch(() => {
+        try {
+          socket.close(1011, "Pi bridge error");
+        } catch {
+          // Socket already closed.
+        }
+      })
+      .finally(() => {
+        if (this.dispatchQueues.get(socket) === next) this.dispatchQueues.delete(socket);
+      });
+  }
 
   async handleMessage(socket: PiBridgeSocket, raw: string): Promise<void> {
     let input: unknown;
@@ -94,6 +125,7 @@ export class PiBridgeManager {
     const peer = this.peersBySocket.get(socket);
     if (!peer) return;
     this.peersBySocket.delete(socket);
+    this.dispatchQueues.delete(socket);
     if (this.peersByKey.get(peer.key)?.socket !== socket) return;
     this.peersByKey.delete(peer.key);
     this.supervisor.detachAgentRuntime(peer.agentId, peer.runtime);
@@ -117,6 +149,7 @@ export class PiBridgeManager {
       this.peersBySocket.delete(previous.socket);
     }
 
+    const existing = this.store.get(agentId);
     const now = new Date().toISOString();
     const patch: Partial<AgentSnapshot> = {
       name: message.name,
@@ -132,7 +165,7 @@ export class PiBridgeManager {
       thinkingLevel: message.thinkingLevel,
       capabilities: message.capabilities,
       contextUsage: message.snapshot.contextPercent ?? 0,
-      messages: message.snapshot.messages.slice(-200),
+      messages: mergeMessages(existing?.messages ?? [], message.snapshot.messages),
       lastSeenAt: now,
       lastActive: "just now",
     };
