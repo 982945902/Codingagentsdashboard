@@ -1,7 +1,16 @@
 import { z } from "zod";
 
-export const runtimeKindSchema = z.enum(["codex", "claude"]);
+export const runtimeKindSchema = z.enum(["codex", "claude", "pi"]);
 export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
+
+export const controlModeSchema = z.enum(["managed", "attached"]);
+export type ControlMode = z.infer<typeof controlModeSchema>;
+
+export const connectionStatusSchema = z.enum(["online", "offline", "reconnecting"]);
+export type ConnectionStatus = z.infer<typeof connectionStatusSchema>;
+
+export const deliveryBehaviorSchema = z.enum(["auto", "steer", "followUp"]);
+export type DeliveryBehavior = z.infer<typeof deliveryBehaviorSchema>;
 
 export const agentStatusSchema = z.enum([
   "idle",
@@ -79,6 +88,8 @@ export const agentSnapshotSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   runtimeKind: runtimeKindSchema,
+  controlMode: controlModeSchema.default("managed"),
+  connectionStatus: connectionStatusSchema.default("offline"),
   status: agentStatusSchema,
   currentTask: z.string().nullable(),
   uptime: z.string(),
@@ -91,6 +102,22 @@ export const agentSnapshotSchema = z.object({
   cacheHitRate: z.number().min(0).max(100),
   apiCalls: apiCallsSchema,
   model: z.string().min(1),
+  provider: z.string().optional(),
+  thinkingLevel: z.string().optional(),
+  hostId: z.string().optional(),
+  lastSeenAt: z.string().datetime().optional(),
+  capabilities: z
+    .object({
+      prompt: z.boolean().default(true),
+      steer: z.boolean().default(false),
+      followUp: z.boolean().default(false),
+      abort: z.boolean().default(false),
+      compact: z.boolean().default(false),
+      setModel: z.boolean().default(false),
+      setThinkingLevel: z.boolean().default(false),
+      attachments: z.boolean().default(false),
+    })
+    .optional(),
   contextUsage: z.number().min(0).max(100),
   workspacePath: z.string().min(1),
   /** Last known runtime session id (e.g. Codex/Claude session UUID for --resume). */
@@ -137,6 +164,7 @@ export type AgentEvent = z.infer<typeof agentEventSchema>;
 export const createAgentSchema = z.object({
   name: z.string().trim().min(1),
   runtimeKind: runtimeKindSchema.default("codex"),
+  controlMode: controlModeSchema.default("managed"),
   workspacePath: z.string().trim().min(1),
   model: z.string().trim().min(1).default("codex"),
   branch: z.string().trim().min(1).optional(),
@@ -149,6 +177,7 @@ export type CreateAgentRequest = z.input<typeof createAgentSchema>;
 
 export const agentCommandSchema = z.object({
   command: z.string().default(""),
+  delivery: deliveryBehaviorSchema.default("auto"),
   attachments: z
     .array(
       z.object({
@@ -163,6 +192,7 @@ export const agentCommandSchema = z.object({
 });
 export type AgentCommandRequest = {
   command: string;
+  delivery?: DeliveryBehavior;
   attachments?: Array<{
     name: string;
     size: number;
@@ -255,6 +285,10 @@ export const wsClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent.restart"), agentId: z.string().min(1) }),
   z.object({ type: z.literal("agent.stop"), agentId: z.string().min(1) }),
   z.object({
+    type: z.literal("agent.abort"),
+    agentId: z.string().min(1),
+  }),
+  z.object({
     type: z.literal("agent.command"),
     agentId: z.string().min(1),
     payload: agentCommandSchema,
@@ -268,10 +302,128 @@ export const wsClientMessageSchema = z.discriminatedUnion("type", [
 ]);
 export type WsClientMessage = z.infer<typeof wsClientMessageSchema>;
 
+const piBridgeCapabilitiesSchema = z.object({
+  prompt: z.boolean().default(true),
+  steer: z.boolean().default(true),
+  followUp: z.boolean().default(true),
+  abort: z.boolean().default(true),
+  compact: z.boolean().default(true),
+  setModel: z.boolean().default(false),
+  setThinkingLevel: z.boolean().default(true),
+  attachments: z.boolean().default(false),
+});
+
+export const piBridgeSnapshotSchema = z.object({
+  messages: z.array(agentMessageSchema).default([]),
+  contextPercent: z.number().min(0).max(100).nullable().optional(),
+  contextTokens: z.number().int().nonnegative().nullable().optional(),
+  contextWindow: z.number().int().positive().optional(),
+});
+export type PiBridgeSnapshot = z.infer<typeof piBridgeSnapshotSchema>;
+
+export const piBridgeRegisterSchema = z.object({
+  type: z.literal("pi.register"),
+  version: z.literal(1),
+  token: z.string().min(1),
+  sessionId: z.string().min(1),
+  hostId: z.string().min(1),
+  name: z.string().min(1),
+  cwd: z.string().min(1),
+  provider: z.string().default("unknown"),
+  model: z.string().min(1),
+  thinkingLevel: z.string().default("off"),
+  state: z.enum(["idle", "busy"]).default("idle"),
+  capabilities: piBridgeCapabilitiesSchema,
+  snapshot: piBridgeSnapshotSchema,
+});
+export type PiBridgeRegister = z.infer<typeof piBridgeRegisterSchema>;
+
+const piBridgeAgentMessageEventSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("message.start"), message: agentMessageSchema }),
+  z.object({ kind: z.literal("message.delta"), messageId: z.string().min(1), delta: z.string() }),
+  z.object({ kind: z.literal("message.end"), message: agentMessageSchema }),
+  z.object({
+    kind: z.literal("tool.call"),
+    messageId: z.string().min(1),
+    toolCallId: z.string().min(1),
+    toolName: z.string().min(1),
+    input: z.string().default(""),
+  }),
+  z.object({
+    kind: z.literal("tool.result"),
+    messageId: z.string().min(1),
+    toolCallId: z.string().min(1),
+    status: z.enum(["success", "error"]),
+    output: z.string().default(""),
+  }),
+  z.object({ kind: z.literal("state"), state: z.enum(["idle", "busy"]) }),
+  z.object({
+    kind: z.literal("usage"),
+    contextPercent: z.number().min(0).max(100).nullable().optional(),
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    cacheReadTokens: z.number().int().nonnegative().optional(),
+    cacheCreationTokens: z.number().int().nonnegative().optional(),
+    costUSD: z.number().nonnegative().optional(),
+  }),
+  z.object({
+    kind: z.literal("metadata"),
+    name: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    provider: z.string().min(1).optional(),
+    thinkingLevel: z.string().min(1).optional(),
+  }),
+]);
+export type PiBridgeAgentEvent = z.infer<typeof piBridgeAgentMessageEventSchema>;
+
+export const piBridgeClientMessageSchema = z.discriminatedUnion("type", [
+  piBridgeRegisterSchema,
+  z.object({
+    type: z.literal("pi.event"),
+    version: z.literal(1),
+    sessionId: z.string().min(1),
+    sequence: z.number().int().nonnegative(),
+    event: piBridgeAgentMessageEventSchema,
+  }),
+  z.object({
+    type: z.literal("pi.command.result"),
+    version: z.literal(1),
+    sessionId: z.string().min(1),
+    commandId: z.string().min(1),
+    accepted: z.boolean(),
+    error: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("pi.heartbeat"),
+    version: z.literal(1),
+    sessionId: z.string().min(1),
+  }),
+]);
+export type PiBridgeClientMessage = z.infer<typeof piBridgeClientMessageSchema>;
+
+export const piBridgeServerMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("pi.registered"),
+    version: z.literal(1),
+    agentId: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("pi.command"),
+    version: z.literal(1),
+    commandId: z.string().min(1),
+    action: z.enum(["prompt", "abort", "compact"]),
+    text: z.string().optional(),
+    delivery: deliveryBehaviorSchema.optional(),
+  }),
+]);
+export type PiBridgeServerMessage = z.infer<typeof piBridgeServerMessageSchema>;
+
 export const serverSettingsSchema = z.object({
   host: z.string().default("127.0.0.1"),
   port: z.coerce.number().int().min(0).max(65535).default(8787),
   apiKey: z.string().min(1).default("dev-api-key"),
+  /** Separate token used by Pi bridge extensions. Defaults to apiKey for local development. */
+  piBridgeToken: z.string().min(1).default("dev-api-key"),
   corsOrigins: z.array(z.string().min(1)).default(["*"]),
   /** Path used to persist agent snapshots between restarts. Empty disables persistence. */
   persistencePath: z.string().default(".data/agents.json"),

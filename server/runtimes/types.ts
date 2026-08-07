@@ -6,7 +6,7 @@ import type {
 
 export interface RuntimeMessageStart {
   messageId: string;
-  role: "assistant" | "tool" | "system";
+  role: "user" | "assistant" | "tool" | "system";
 }
 
 export interface RuntimeMessageDelta {
@@ -49,7 +49,7 @@ export interface RuntimeUsage {
 /**
  * A runtime-initiated approval request (e.g. codex asking whether a command
  * may run or a patch may be applied). The handler resolves with the user's
- * decision; runtimes fall back to "allow" when no handler answers in time.
+ * decision; dashboard and runtime timeouts fail closed with "deny".
  */
 export interface RuntimeApprovalRequest {
   approvalId: string;
@@ -88,17 +88,21 @@ export interface RuntimeStartOptions {
   /** Incremental usage report — see {@link RuntimeUsage} for delta semantics. */
   onUsage?(usage: RuntimeUsage): void;
   onTurnComplete?(): void;
+  onStatusChange?(status: "idle" | "busy"): void;
   /** Ask the user to approve a runtime action — see {@link RuntimeApprovalRequest}. */
   onApprovalRequest?(req: RuntimeApprovalRequest): Promise<"allow" | "deny">;
 }
 
 export interface AgentRuntime {
   readonly kind: RuntimeKind;
+  /** Runtime-owned messages are echoed from the runtime and must not be pre-persisted by the supervisor. */
+  readonly messageOwnership?: "supervisor" | "runtime";
   readonly command?: string;
   start(options: RuntimeStartOptions): Promise<void>;
   /** Apply mutable agent settings that can take effect without restarting the runtime. */
   configure?(agent: AgentSnapshot): void;
   send(request: AgentCommandRequest | string): Promise<void>;
+  abort?(): Promise<void>;
   stop(): Promise<void>;
 }
 

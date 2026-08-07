@@ -88,6 +88,7 @@ function startTestServer(
   const app = createApp({
     settings: {
       apiKey,
+      piBridgeToken: apiKey,
       corsOrigins: ["*"],
       host: "127.0.0.1",
       port: 0,
@@ -230,6 +231,7 @@ describe("Bun HTTP app", () => {
     const path = join(dir, ".data", "agents.json");
     const settings = {
       apiKey,
+      piBridgeToken: apiKey,
       corsOrigins: ["*"],
       host: "127.0.0.1",
       port: 0,

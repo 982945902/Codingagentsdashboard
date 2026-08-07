@@ -66,6 +66,77 @@ export class AgentSupervisor {
     return this.runtimes.has(agentId);
   }
 
+  updateAttachedAgent(
+    agentId: string,
+    patch: Partial<AgentSnapshot>,
+  ): AgentSnapshot | undefined {
+    const updated = this.store.update(agentId, patch);
+    if (updated) {
+      this.broadcast([
+        agentEvent(agentId, "updated", "Attached runtime updated", updated),
+      ]);
+    }
+    return updated;
+  }
+
+  async attachAgentRuntime(
+    agentId: string,
+    runtime: AgentRuntime,
+  ): Promise<AgentEvent[]> {
+    const agent = this.store.get(agentId);
+    if (!agent) return [agentEvent(agentId, "error", "Agent not found")];
+    this.runtimes.set(agentId, runtime);
+    const events: AgentEvent[] = [];
+    try {
+      await runtime.start(this.buildStartOptions(agentId, agent));
+      events.push(...this.drainEvents(agentId));
+      pushAgentUpdated(
+        events,
+        this.store.update(agentId, {
+          status: "running",
+          connectionStatus: "online",
+          currentTask: null,
+        }),
+      );
+    } catch (error) {
+      this.runtimes.delete(agentId);
+      const message = error instanceof Error ? error.message : String(error);
+      events.push(agentEvent(agentId, "error", message));
+    }
+    this.broadcast(events);
+    return events;
+  }
+
+  detachAgentRuntime(agentId: string, runtime: AgentRuntime): void {
+    if (this.runtimes.get(agentId) !== runtime) return;
+    this.runtimes.delete(agentId);
+    void runtime.stop();
+    const updated = this.store.update(agentId, {
+      status: "paused",
+      connectionStatus: "offline",
+      currentTask: null,
+      lastSeenAt: new Date().toISOString(),
+    });
+    if (updated) {
+      this.broadcast([
+        agentEvent(agentId, "updated", "Attached runtime disconnected", updated),
+      ]);
+    }
+  }
+
+  async abortAgent(agentId: string): Promise<AgentEvent[]> {
+    const runtime = this.runtimes.get(agentId);
+    if (!runtime?.abort) {
+      const events = [agentEvent(agentId, "error", "Runtime does not support abort")];
+      this.broadcast(events);
+      return events;
+    }
+    await runtime.abort();
+    const events = [agentEvent(agentId, "log", "Abort requested")];
+    this.broadcast(events);
+    return events;
+  }
+
   async startAgent(agentId: string): Promise<AgentEvent[]> {
     const events = await this.startAgentInternal(agentId);
     this.broadcast(events);
@@ -77,7 +148,10 @@ export class AgentSupervisor {
     if (!agent) return [agentEvent(agentId, "error", "Agent not found")];
 
     if (this.runtimes.has(agentId)) {
-      const updated = this.store.update(agentId, { status: "running" });
+      const updated = this.store.update(agentId, {
+        status: "running",
+        connectionStatus: "online",
+      });
       const events = updated
       ? [agentEvent(agentId, "updated", "Agent updated", updated)]
         : [];
@@ -90,6 +164,7 @@ export class AgentSupervisor {
 
     const updated = this.store.update(agentId, {
       status: "running",
+      connectionStatus: "reconnecting",
       currentTask: "Starting runtime",
     });
     pushAgentUpdated(events, updated);
@@ -99,7 +174,11 @@ export class AgentSupervisor {
       events.push(...this.drainEvents(agentId));
       pushAgentUpdated(
         events,
-        this.store.update(agentId, { status: "running", currentTask: null }),
+        this.store.update(agentId, {
+          status: "running",
+          connectionStatus: "online",
+          currentTask: null,
+        }),
       );
     } catch (error) {
       this.runtimes.delete(agentId);
@@ -151,18 +230,21 @@ export class AgentSupervisor {
     const runtimeCommand = buildRuntimeCommand(command, request.attachments ?? []);
     const events: AgentEvent[] = [agentEvent(agentId, "command", command)];
 
-    // Record the user message in the structured chat history immediately.
-    const userMessage: AgentMessage = {
-      id: `msg-${crypto.randomUUID()}`,
-      role: "user",
-      content: runtimeCommand,
-      format: "text",
-      streaming: false,
-      toolCalls: [],
-      createdAt: new Date().toISOString(),
-    };
-    const withUser = appendMessage(this.store, agentId, userMessage);
-    pushAgentUpdated(events, withUser);
+    // Managed runtimes need the supervisor to persist the optimistic user message.
+    // Attached runtimes (Pi) echo the authoritative user message from the live TUI session.
+    if (runtime.messageOwnership !== "runtime") {
+      const userMessage: AgentMessage = {
+        id: `msg-${crypto.randomUUID()}`,
+        role: "user",
+        content: runtimeCommand,
+        format: "text",
+        streaming: false,
+        toolCalls: [],
+        createdAt: new Date().toISOString(),
+      };
+      const withUser = appendMessage(this.store, agentId, userMessage);
+      pushAgentUpdated(events, withUser);
+    }
 
     const updated = this.store.update(agentId, {
       status: "busy",
@@ -268,6 +350,7 @@ export class AgentSupervisor {
 
     const updated = this.store.update(agentId, {
       status: "stopped",
+      connectionStatus: "offline",
       currentTask: null,
     });
     pushAgentUpdated(events, updated);
@@ -287,6 +370,7 @@ export class AgentSupervisor {
     await this.stopRuntimeForRestart(agentId, events);
     const updated = this.store.update(agentId, {
       status: "paused",
+      connectionStatus: "offline",
       currentTask: null,
     });
     pushAgentUpdated(events, updated);
@@ -352,9 +436,9 @@ export class AgentSupervisor {
         if (!pending) return;
         this.bufferLog(
           agentId,
-          `[approval] ${req.approvalId} unanswered after ${this.approvalTimeoutMs}ms — falling back to allow`,
+          `[approval] ${req.approvalId} unanswered after ${this.approvalTimeoutMs}ms — falling back to deny`,
         );
-        this.settleApproval(agentId, req.approvalId, pending, "allow");
+        this.settleApproval(agentId, req.approvalId, pending, "deny");
       }, this.approvalTimeoutMs);
       timer.unref?.();
 
@@ -411,6 +495,7 @@ export class AgentSupervisor {
         const status = code === 0 ? "stopped" : "error";
         const exited = this.store.update(agentId, {
           status,
+          connectionStatus: "offline",
           currentTask: null,
         });
         this.bufferAgentUpdated(agentId, exited);
@@ -432,7 +517,7 @@ export class AgentSupervisor {
         this.bufferAgentUpdated(agentId, persisted);
         this.bufferLog(agentId, `[runtime] session id captured: ${sessionId}`);
       },
-      onMessageStart: (e: { messageId: string; role: "assistant" | "tool" | "system" }) => {
+      onMessageStart: (e: { messageId: string; role: "user" | "assistant" | "tool" | "system" }) => {
         const message: AgentMessage = {
           id: e.messageId,
           role: e.role,
@@ -539,6 +624,18 @@ export class AgentSupervisor {
           : undefined;
         this.bufferAgentUpdated(agentId, updated ?? recorded);
         this.bufferEvent(agentId, agentEvent(agentId, "turnComplete", "turn complete", updated ?? recorded));
+      },
+      onStatusChange: (status: "idle" | "busy") => {
+        const updated = this.store.update(agentId, {
+          status: status === "busy" ? "busy" : "running",
+          currentTask:
+            status === "idle"
+              ? null
+              : this.store.get(agentId)?.currentTask ?? "Pi TUI activity",
+          connectionStatus: "online",
+          lastSeenAt: new Date().toISOString(),
+        });
+        this.bufferAgentUpdated(agentId, updated);
       },
       onApprovalRequest: (req: RuntimeApprovalRequest) => this.registerApproval(agentId, req),
     };

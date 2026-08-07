@@ -388,10 +388,10 @@ export class CodexAppServerRuntime implements AgentRuntime {
       details: JSON.stringify(params).slice(0, 2000),
     };
 
-    let decision: "allow" | "deny" = "allow";
+    let decision: "allow" | "deny" = "deny";
     const handler = this.options?.onApprovalRequest;
     if (!handler) {
-      this.options?.onLine(`[codex] approval ${method} auto-allowed (no approval handler)`);
+      this.options?.onLine(`[codex] approval ${method} denied (no approval handler)`);
     } else {
       decision = await this.awaitApprovalDecision(handler(request), method);
     }
@@ -401,7 +401,7 @@ export class CodexAppServerRuntime implements AgentRuntime {
     this.replyToServerRequest(env, { decision: decision === "allow" ? "accept" : "decline" });
   }
 
-  /** Race the dashboard's answer against the auto-allow fallback timeout. */
+  /** Race the dashboard's answer against the fail-closed timeout. */
   private awaitApprovalDecision(
     answer: Promise<"allow" | "deny">,
     method: string,
@@ -409,9 +409,9 @@ export class CodexAppServerRuntime implements AgentRuntime {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.options?.onLine(
-          `[codex] approval ${method} unanswered after ${this.approvalTimeoutMs}ms — falling back to allow`,
+          `[codex] approval ${method} unanswered after ${this.approvalTimeoutMs}ms — falling back to deny`,
         );
-        resolve("allow");
+        resolve("deny");
       }, this.approvalTimeoutMs);
       timer.unref?.();
       answer.then(
@@ -421,8 +421,8 @@ export class CodexAppServerRuntime implements AgentRuntime {
         },
         (err) => {
           clearTimeout(timer);
-          this.options?.onLine(`[codex] approval handler failed (${err}) — falling back to allow`);
-          resolve("allow");
+          this.options?.onLine(`[codex] approval handler failed (${err}) — falling back to deny`);
+          resolve("deny");
         },
       );
     });

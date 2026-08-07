@@ -81,7 +81,9 @@ export function KanbanBoard({
 
   const handleDelete = async (event: React.MouseEvent, agentId: string) => {
     event.stopPropagation();
-    if (!window.confirm("Delete this agent? Running session will be stopped.")) return;
+    if (!window.confirm(agentId.startsWith("agent-pi-")
+      ? "Forget this attached Pi session? The TUI process will keep running."
+      : "Delete this agent? Running session will be stopped.")) return;
     try {
       await onRemoveAgent(agentId);
     } catch (err) {
@@ -156,7 +158,7 @@ export function KanbanBoard({
             <div className="lg:col-span-2 rounded-lg border border-dashed border-border bg-card/60 p-6 text-center">
               <div className="text-card-foreground mb-1">No agents connected yet</div>
               <div className="text-sm text-muted-foreground">
-                Create a Codex or Claude agent to start collecting real runtime metrics.
+                Create a Codex or Claude agent, or start Pi with pi-dashboard-bridge installed.
               </div>
             </div>
           )}
@@ -166,7 +168,7 @@ export function KanbanBoard({
               className="relative bg-card border border-border rounded-lg p-4 lg:p-5 hover:border-primary transition-all group"
             >
               {/* Delete button (top-right) */}
-              {canMutate && (
+              {canMutate && agent.controlMode !== "attached" && (
                 <button
                   onClick={(e) => handleDelete(e, agent.id)}
                   title="Delete agent"
@@ -187,6 +189,12 @@ export function KanbanBoard({
                       <h3 className="text-card-foreground mb-1">{agent.name}</h3>
                       <div className="flex items-center gap-2 text-xs">
                         <span className="text-muted-foreground">{agent.runtimeKind}</span>
+                        {agent.controlMode === "attached" && (
+                          <>
+                            <span className="text-border">•</span>
+                            <span className="text-primary">attached</span>
+                          </>
+                        )}
                         <span className="text-border">•</span>
                         <span className="text-muted-foreground">{agent.model}</span>
                         {agent.branch && (

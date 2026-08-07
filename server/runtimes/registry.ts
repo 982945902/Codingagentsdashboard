@@ -17,6 +17,8 @@ export function createRuntimeForAgent(
         args: agent.runtimeArgs ?? [],
         resumeSessionId: agent.sessionId ?? null,
       });
+    case "pi":
+      throw new Error("Pi runtimes attach through /ws/bridges/pi and cannot be spawned by the dashboard");
     default:
       return assertNever(agent.runtimeKind);
   }

@@ -21,5 +21,6 @@ console.log(
   `Coding agents backend listening on http://${server.hostname}:${server.port}`,
 );
 console.log(`WebSocket channel: ws://${server.hostname}:${server.port}/ws/agents`);
+console.log(`Pi bridge channel: ws://${server.hostname}:${server.port}/ws/bridges/pi`);
 
 setInterval(() => {}, 60_000);

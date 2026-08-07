@@ -5,6 +5,7 @@ export function loadServerSettings(env: Record<string, string | undefined> = Bun
     host: env.HOST,
     port: env.PORT,
     apiKey: env.API_KEY,
+    piBridgeToken: env.PI_BRIDGE_TOKEN ?? env.API_KEY,
     corsOrigins: env.CORS_ORIGINS?.split(",").map((origin) => origin.trim()).filter(Boolean),
     persistencePath: Object.hasOwn(env, "PERSISTENCE_PATH")
       ? env.PERSISTENCE_PATH
@@ -16,6 +17,9 @@ export function loadServerSettings(env: Record<string, string | undefined> = Bun
   });
   if (!isLoopbackHost(settings.host) && settings.apiKey === "dev-api-key") {
     throw new Error("API_KEY must be set when HOST is not a loopback address");
+  }
+  if (!isLoopbackHost(settings.host) && settings.piBridgeToken === "dev-api-key") {
+    throw new Error("PI_BRIDGE_TOKEN must be set when HOST is not a loopback address");
   }
   return settings;
 }

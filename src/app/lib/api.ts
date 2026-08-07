@@ -5,7 +5,8 @@ export interface ApiConfig {
   apiKey: string;
 }
 
-export type RuntimeKind = "codex" | "claude";
+export type RuntimeKind = "codex" | "claude" | "pi";
+export type DeliveryBehavior = "auto" | "steer" | "followUp";
 
 export interface CreateAgentRequest {
   name: string;
@@ -21,6 +22,7 @@ export interface CreateAgentRequest {
 
 export interface CommandPayload {
   command: string;
+  delivery?: DeliveryBehavior;
   attachments?: Array<{
     name: string;
     size: number;
@@ -38,6 +40,8 @@ export interface AgentSnapshot {
   id: string;
   name: string;
   runtimeKind: RuntimeKind;
+  controlMode: "managed" | "attached";
+  connectionStatus: "online" | "offline" | "reconnecting";
   status: "idle" | "running" | "busy" | "paused" | "stopped" | "error";
   currentTask: string | null;
   uptime: string;
@@ -55,6 +59,20 @@ export interface AgentSnapshot {
   cacheHitRate: number;
   apiCalls: { total: number; success: number; errors: number };
   model: string;
+  provider?: string;
+  thinkingLevel?: string;
+  hostId?: string;
+  lastSeenAt?: string;
+  capabilities?: {
+    prompt: boolean;
+    steer: boolean;
+    followUp: boolean;
+    abort: boolean;
+    compact: boolean;
+    setModel: boolean;
+    setThinkingLevel: boolean;
+    attachments: boolean;
+  };
   contextUsage: number;
   workspacePath: string;
   sessionId: string | null;

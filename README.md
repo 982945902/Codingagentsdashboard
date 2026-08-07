@@ -1,6 +1,6 @@
 # Coding Agents Dashboard
 
-Web/Mobile 控制台，用来远程操作本地 coding agent CLI 进程（首要支持 **Codex** 与 **Claude**），并支持复用既有 session 继续开发。
+Web/Mobile 控制台，用来远程操作本地 coding agent CLI 进程（支持 **Pi、Codex 与 Claude**），并支持复用既有 session 继续开发。Pi 通过 attached bridge 与现有 TUI 无缝共享同一个运行中 Session。
 
 UI 原稿：https://www.figma.com/design/x5cz6ACA67qdgKtc1Pv1L5/Coding-Agents-Dashboard
 
@@ -12,14 +12,16 @@ UI 原稿：https://www.figma.com/design/x5cz6ACA67qdgKtc1Pv1L5/Coding-Agents-Da
         │   WS:   /ws/agents  (双向实时事件)
         ▼
 Bun.serve  ──►  AgentSupervisor  ──►  Runtime
+                     │                 ├─ PiAttachedRuntime       (连接现有 Pi TUI)
                      │                 ├─ CodexAppServerRuntime  (codex app-server 长驻 JSON-RPC)
-                     │                 └─ ClaudeCliRuntime  (claude -p --output-format stream-json)
+                     │                 └─ ClaudeCliRuntime       (claude -p --output-format stream-json)
                      ▼
                   AgentStore (messages + logs，内存 + 可选 JSON 持久化)
                      │
                      └─ WhisperCliTranscriber (whisper.cpp 服务端语音转录)
 ```
 
+- **Pi attached runtime**：已运行的 Pi TUI 通过仓库内 `packages/pi-dashboard-bridge` 主动连接 `/ws/bridges/pi`。Dashboard 与 TUI 观察、控制同一个 Pi Session；网页支持普通 prompt、steer、follow-up 和 abort。
 - **共享契约**：`src/shared/contracts.ts`（zod schema，前后端共用类型）
 - **后端**：`server/`（Bun + TypeScript）
 - **前端**：`src/`（Vite + React 18）
@@ -30,7 +32,7 @@ Bun.serve  ──►  AgentSupervisor  ──►  Runtime
 - `ClaudeCliRuntime` 使用 `claude -p <prompt> --output-format stream-json --verbose` 执行单 turn；解析 system / assistant content blocks / tool_use / tool_result / result / done 事件。
 - 每个 dashboard agent 与一个底层 Coding CLI session/thread 一对一绑定：runtime 捕获 session id（codex: thread id；claude: `session.id`）后写回 `AgentSnapshot.sessionId`，默认持久化到 `.data/agents.json`，后续 start/send 会 resume 同一个 session。
 - 也可以通过 REST `POST /api/agents` 时显式传 `sessionId` / `runtimeArgs` 来手动接管。
-- Codex runtime 的 command/patch approval 会通过 WebSocket 发给前端，用户可 Allow/Deny；无人响应时后端 60s 后自动 allow，避免 runtime 卡死。
+- Codex runtime 的 command/patch approval 会通过 WebSocket 发给前端，用户可 Allow/Deny；无人响应时后端 60s 后自动 deny，避免无人值守时放行危险操作。
 
 ### 语音输入转录
 
@@ -96,6 +98,7 @@ Android 模拟器默认连接 `http://10.0.2.2:8787`；真机需要在 Settings 
 | `HOST` | `127.0.0.1` | 监听地址；非 loopback 地址必须显式设置非默认 `API_KEY` |
 | `PORT` | `8787` | 监听端口 |
 | `API_KEY` | `dev-api-key` | 客户端通过 `x-api-key` 头或 `?apiKey=` 查询参数携带；只适合本地 loopback 使用 |
+| `PI_BRIDGE_TOKEN` | 与 `API_KEY` 相同 | Pi bridge 注册认证；生产环境建议使用独立随机值 |
 | `CORS_ORIGINS` | `*` | 逗号分隔的允许来源 |
 | `PERSISTENCE_PATH` | `.data/agents.json` | agent 快照持久化路径；设为空字符串可禁用持久化 |
 | `WHISPER_CPP_BIN` | `whisper-cli` | whisper.cpp CLI 可执行文件 |
@@ -119,7 +122,9 @@ Android 模拟器默认连接 `http://10.0.2.2:8787`；真机需要在 Settings 
 
 ## WebSocket
 
-`ws://<host>:<port>/ws/agents?apiKey=<key>`
+`ws://<host>:<port>/ws/agents?apiKey=<key>` 是浏览器事件通道。
+
+`ws://<host>:<port>/ws/bridges/pi` 是 Pi Extension 的 attached runtime 通道，认证 Token 在首个 `pi.register` 帧中传递，不进入 URL。
 
 - 客户端 → 服务端：`agent.start` / `agent.stop` / `agent.command` / `agent.approval.response`
 - 服务端 → 客户端：
@@ -133,6 +138,41 @@ Android 模拟器默认连接 `http://10.0.2.2:8787`；真机需要在 Settings 
 每条 assistant 消息走 `start → delta* → end` 序列；该消息内的工具调用走 `tool.call → tool.result`，`messageId` 与父消息一致。前端 `useAgents` hook 用 reducer 风格把这些事件还原成 `AgentSnapshot.messages[]` 供 `WorkspacePanel` 的 Chat 卡片流渲染（含流式光标 + tool call 子卡片）。
 
 详见 `wsClientMessageSchema` 与 `wsServerEventSchema`（`src/shared/contracts.ts`）。
+
+## Pi TUI 接入
+
+安装仓库自带的 Pi package：
+
+```bash
+pi install ./packages/pi-dashboard-bridge
+```
+
+启动 Dashboard 后重启 Pi 或执行 `/reload`。每个 Pi TUI 会自动出现在看板中，卡片使用 `hostId + Pi sessionId` 生成稳定 ID，断线后标记 offline，重连不会产生重复卡片。
+
+默认连接：
+
+```text
+ws://127.0.0.1:8787/ws/bridges/pi
+```
+
+可通过环境变量覆盖：
+
+```bash
+export PI_DASHBOARD_URL=ws://127.0.0.1:8787/ws/bridges/pi
+export PI_DASHBOARD_TOKEN="$PI_BRIDGE_TOKEN"
+export PI_DASHBOARD_HOST_ID=my-devbox
+```
+
+也可写入 `~/.pi/agent/dashboard/config.json`，详见 `packages/pi-dashboard-bridge/README.md`。Bridge 不上传 thinking 内容。
+
+### 作为 user daemon 安装
+
+```bash
+chmod +x scripts/install-daemon.sh
+./scripts/install-daemon.sh
+```
+
+脚本会生成随机的 Dashboard API Key 与 Pi Bridge Token，安装并启动 `coding-agents-dashboard.service`，同时以 `0600` 权限写入 Pi Bridge 配置。部署前先运行 `pnpm build` 生成 `dist/`。
 
 ## 前端使用
 

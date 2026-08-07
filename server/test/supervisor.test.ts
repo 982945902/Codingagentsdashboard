@@ -602,7 +602,7 @@ describe("agent supervisor", () => {
     expect(supervisor.respondToApproval(agent.id, "approval-1", "allow")).toBe(false);
   });
 
-  it("falls back to allow when an approval times out", async () => {
+  it("falls back to deny when an approval times out", async () => {
     const store = createAgentStore([]);
     const agent = store.create({
       name: "Approval Timeout Worker",
@@ -625,12 +625,12 @@ describe("agent supervisor", () => {
       summary: "Apply patch to src/index.ts",
     });
 
-    expect(decision).toBe("allow");
+    expect(decision).toBe("deny");
     const resolved = received.find((evt) => evt.type === "approvalResolved");
     expect(resolved?.payload?.approvalId).toBe("approval-timeout");
-    expect(resolved?.payload?.approvalDecision).toBe("allow");
+    expect(resolved?.payload?.approvalDecision).toBe("deny");
     expect(
-      store.get(agent.id)?.logs.some((line) => line.includes("falling back to allow")),
+      store.get(agent.id)?.logs.some((line) => line.includes("falling back to deny")),
     ).toBe(true);
     // The timed-out approval can no longer be answered.
     expect(supervisor.respondToApproval(agent.id, "approval-timeout", "deny")).toBe(false);

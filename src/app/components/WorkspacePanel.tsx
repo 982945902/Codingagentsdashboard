@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import { Agent } from "../App";
+import type { DeliveryBehavior } from "../lib/api";
 import type { AgentCommandAttachment, ApprovalDecision } from "../lib/agentSocket";
 import type { PendingApproval } from "../hooks/useAgents";
 import {
@@ -40,11 +41,13 @@ interface WorkspacePanelProps {
     agentId: string,
     command: string,
     attachments?: AgentCommandAttachment[],
+    delivery?: DeliveryBehavior,
   ) => string[] | Promise<string[]>;
   onStartAgent?: (agentId: string) => void;
   onPauseAgent?: (agentId: string) => void;
   onRestartAgent?: (agentId: string) => void;
   onStopAgent?: (agentId: string) => void;
+  onAbortAgent?: (agentId: string) => void;
   allAgents?: Agent[];
   pendingApprovals?: PendingApproval[];
   onRespondToApproval?: (
@@ -113,6 +116,7 @@ export function WorkspacePanel({
   onPauseAgent,
   onRestartAgent,
   onStopAgent,
+  onAbortAgent,
   allAgents = [],
   pendingApprovals = [],
   onRespondToApproval,
@@ -126,6 +130,7 @@ export function WorkspacePanel({
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [delivery, setDelivery] = useState<DeliveryBehavior>("auto");
   const [logsCollapsed, setLogsCollapsed] = useState(true);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
@@ -180,7 +185,7 @@ export function WorkspacePanel({
       ]);
       return;
     }
-    const responseLines = await onSendCommand(agent.id, commandText, attachments);
+    const responseLines = await onSendCommand(agent.id, commandText, attachments, delivery);
 
     setTerminalHistory((currentHistory) => [
       ...currentHistory,
@@ -230,6 +235,16 @@ export function WorkspacePanel({
         ...currentHistory,
         "$ restart",
         `> Restarting ${agent.name}`,
+      ]);
+      return;
+    }
+
+    if (action === "abort" && onAbortAgent) {
+      onAbortAgent(agent.id);
+      setTerminalHistory((currentHistory) => [
+        ...currentHistory,
+        "$ abort",
+        `> Aborting ${agent.name}`,
       ]);
       return;
     }
@@ -361,12 +376,16 @@ export function WorkspacePanel({
     }
   };
 
-  const quickActions = [
-    { icon: PlayCircle, label: "Start", cmd: "start" },
-    { icon: PauseCircle, label: "Pause", cmd: "pause" },
-    { icon: RotateCcw, label: "Restart", cmd: "restart" },
-    { icon: XCircle, label: "Stop", cmd: "stop" },
-  ];
+  const quickActions = agent.controlMode === "attached"
+    ? [
+        { icon: XCircle, label: "Abort", cmd: "abort" },
+      ]
+    : [
+        { icon: PlayCircle, label: "Start", cmd: "start" },
+        { icon: PauseCircle, label: "Pause", cmd: "pause" },
+        { icon: RotateCcw, label: "Restart", cmd: "restart" },
+        { icon: XCircle, label: "Stop", cmd: "stop" },
+      ];
 
   const totalTokens = agent.tokenUsage.input + agent.tokenUsage.output;
   const totalCacheTokens = agent.tokenUsage.cacheRead + agent.tokenUsage.cacheCreation;
@@ -764,6 +783,19 @@ export function WorkspacePanel({
               >
                 <Mic className="w-4 h-4" />
               </button>
+
+              {agent.controlMode === "attached" && (
+                <select
+                  value={delivery}
+                  onChange={(event) => setDelivery(event.target.value as DeliveryBehavior)}
+                  className="px-2 py-2 bg-input-background text-foreground rounded-md border border-border text-xs"
+                  title="Delivery while Pi is busy"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="steer">Steer</option>
+                  <option value="followUp">Follow-up</option>
+                </select>
+              )}
 
               {/* Text Input */}
               <input
