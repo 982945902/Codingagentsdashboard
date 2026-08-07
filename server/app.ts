@@ -11,6 +11,7 @@ import {
 import { existsSync } from "node:fs";
 import { extname, join, normalize, relative, resolve } from "node:path";
 import { AgentSupervisor } from "./agentSupervisor";
+import { PiBridgeManager } from "./piBridgeManager";
 import { loadServerSettings } from "./config";
 import { createAgentStore, type AgentStore } from "./store";
 import { createWhisperTranscriber, type Transcriber } from "./transcription";
@@ -25,6 +26,7 @@ export interface AppOptions {
 
 export interface WsClientContext {
   authenticated: boolean;
+  channel: "agents" | "pi";
   unsubscribe?: () => void;
 }
 
@@ -55,6 +57,7 @@ export interface BunApp {
   subscribe(listener: (event: AgentEvent) => void): () => void;
   /** Trigger supervisor actions programmatically (used by tests). */
   supervisor: AgentSupervisor;
+  piBridgeManager: PiBridgeManager;
   store: AgentStore;
 }
 
@@ -86,6 +89,7 @@ export function createApp(options: AppOptions = {}): BunApp {
   const staticDir = resolve(options.staticDir ?? DEFAULT_STATIC_DIR);
 
   const sockets = new Set<BunWebSocket>();
+  const piBridgeManager = new PiBridgeManager(store, supervisor, settings.piBridgeToken);
 
   // Convert internal supervisor events into wire events broadcast to all
   // authenticated WebSocket clients.
@@ -146,10 +150,12 @@ export function createApp(options: AppOptions = {}): BunApp {
   return {
     store,
     supervisor,
+    piBridgeManager,
     subscribe: (listener) => supervisor.subscribe(listener),
 
     websocket: {
       open(ws) {
+        if (ws.data.channel === "pi") return;
         sockets.add(ws);
         if (!ws.data.authenticated) return;
         // Send a snapshot of the current state on connect.
@@ -164,10 +170,6 @@ export function createApp(options: AppOptions = {}): BunApp {
         }
       },
       message(ws, raw) {
-        if (!ws.data.authenticated) {
-          ws.close(1008, "Unauthorized");
-          return;
-        }
         const text =
           typeof raw === "string"
             ? raw
@@ -176,6 +178,14 @@ export function createApp(options: AppOptions = {}): BunApp {
                   ? raw
                   : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength),
               );
+        if (ws.data.channel === "pi") {
+          piBridgeManager.dispatch(ws, text);
+          return;
+        }
+        if (!ws.data.authenticated) {
+          ws.close(1008, "Unauthorized");
+          return;
+        }
         let payload: unknown;
         try {
           payload = JSON.parse(text);
@@ -199,6 +209,9 @@ export function createApp(options: AppOptions = {}): BunApp {
           case "agent.stop":
             void supervisor.stopAgent(message.agentId);
             return;
+          case "agent.abort":
+            void supervisor.abortAgent(message.agentId);
+            return;
           case "agent.command":
             void supervisor.sendCommand(message.agentId, message.payload);
             return;
@@ -212,6 +225,10 @@ export function createApp(options: AppOptions = {}): BunApp {
         }
       },
       close(ws) {
+        if (ws.data.channel === "pi") {
+          piBridgeManager.disconnect(ws);
+          return;
+        }
         sockets.delete(ws);
       },
     },
@@ -227,13 +244,24 @@ export function createApp(options: AppOptions = {}): BunApp {
         return json(request, { status: "ok" });
       }
 
-      // ---- WebSocket upgrade ----
+      // ---- WebSocket upgrades ----
+      if (url.pathname === "/ws/bridges/pi" && server) {
+        if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+          return json(request, { error: "Upgrade required" }, 426);
+        }
+        const upgraded = server.upgrade(request, {
+          data: { authenticated: false, channel: "pi" },
+        });
+        if (!upgraded) return json(request, { error: "Upgrade failed" }, 400);
+        return undefined as unknown as Response;
+      }
+
       if (url.pathname === "/ws/agents" && server) {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
           return json(request, { error: "Upgrade required" }, 426);
         }
         const upgraded = server.upgrade(request, {
-          data: { authenticated: authorized(request) },
+          data: { authenticated: authorized(request), channel: "agents" },
         });
         if (!upgraded) {
           return json(request, { error: "Upgrade failed" }, 400);
@@ -355,6 +383,14 @@ export function createApp(options: AppOptions = {}): BunApp {
       const restartMatch = /^\/api\/agents\/([^/]+)\/restart$/.exec(url.pathname);
       if (request.method === "POST" && restartMatch) {
         const events = await supervisor.restartAgent(decodeURIComponent(restartMatch[1]));
+        const error = events.find((e) => e.type === "error");
+        if (error) return json(request, { error: error.message }, 400);
+        return json(request, { ok: true, events });
+      }
+
+      const abortMatch = /^\/api\/agents\/([^/]+)\/abort$/.exec(url.pathname);
+      if (request.method === "POST" && abortMatch) {
+        const events = await supervisor.abortAgent(decodeURIComponent(abortMatch[1]));
         const error = events.find((e) => e.type === "error");
         if (error) return json(request, { error: error.message }, 400);
         return json(request, { ok: true, events });

@@ -21,6 +21,12 @@ export interface AgentStore {
   list(): AgentSnapshot[];
   get(id: string): AgentSnapshot | undefined;
   create(request: CreateAgentRequest): AgentSnapshot;
+  /** Create or update an externally attached runtime using a deterministic id. */
+  upsertAttached(
+    id: string,
+    request: CreateAgentRequest,
+    patch?: Partial<AgentSnapshot>,
+  ): AgentSnapshot;
   update(id: string, patch: Partial<AgentSnapshot>): AgentSnapshot | undefined;
   /** Accumulate a runtime usage delta into tokenUsage/costUSD and derive cacheHitRate. */
   applyUsage(id: string, usage: RuntimeUsage): AgentSnapshot | undefined;
@@ -138,11 +144,16 @@ export function createAgentStore(
     },
     create: (request) => {
       const parsed = createAgentSchema.parse(request);
+      if (parsed.runtimeKind === "pi" || parsed.controlMode === "attached") {
+        throw new Error("Attached Pi runtimes must register through the Pi bridge");
+      }
       const createdAt = new Date().toISOString();
       const agent: AgentSnapshot = {
         id: `agent-${crypto.randomUUID().slice(0, 8)}`,
         name: parsed.name,
         runtimeKind: parsed.runtimeKind,
+        controlMode: parsed.controlMode,
+        connectionStatus: "offline",
         status: "idle",
         currentTask: parsed.currentTask ?? null,
         uptime: "0m",
@@ -165,6 +176,49 @@ export function createAgentStore(
       };
       agents.set(agent.id, agent);
       agentEvents.push(event(agent.id, "created", "Agent created", agent));
+      emit({ type: "created", agent: clone(agent) });
+      return clone(agent);
+    },
+    upsertAttached: (id, request, patch = {}) => {
+      const existing = agents.get(id);
+      if (existing) {
+        return updateAgent(id, {
+          ...patch,
+          controlMode: "attached",
+          updatedAt: new Date().toISOString(),
+        })!;
+      }
+      const parsed = createAgentSchema.parse({ ...request, controlMode: "attached" });
+      const createdAt = new Date().toISOString();
+      const agent: AgentSnapshot = {
+        id,
+        name: parsed.name,
+        runtimeKind: parsed.runtimeKind,
+        controlMode: "attached",
+        connectionStatus: "online",
+        status: "running",
+        currentTask: parsed.currentTask ?? null,
+        uptime: "0m",
+        tasksCompleted: 0,
+        lastActive: "just now",
+        branch: parsed.branch,
+        logs: [`[${createdAt}] Attached runtime connected`],
+        tokenUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+        costUSD: 0,
+        cacheHitRate: 0,
+        apiCalls: { total: 0, success: 0, errors: 0 },
+        model: parsed.model,
+        contextUsage: 0,
+        workspacePath: parsed.workspacePath,
+        sessionId: parsed.sessionId ?? null,
+        runtimeArgs: parsed.runtimeArgs ?? [],
+        messages: [],
+        createdAt,
+        updatedAt: createdAt,
+        ...patch,
+      };
+      agents.set(id, agent);
+      agentEvents.push(event(agent.id, "created", "Attached runtime connected", agent));
       emit({ type: "created", agent: clone(agent) });
       return clone(agent);
     },

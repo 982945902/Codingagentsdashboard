@@ -11,6 +11,7 @@ import {
   type ApiConfig,
   type CreateAgentRequest,
   type AgentSnapshot,
+  type DeliveryBehavior,
 } from "./lib/api";
 import type { AgentCommandAttachment } from "./lib/agentSocket";
 import { Activity, Settings, LayoutGrid } from "lucide-react";
@@ -103,6 +104,7 @@ export default function App() {
     pauseAgent,
     restartAgent,
     stopAgent,
+    abortAgent,
     respondToApproval,
     createAgent,
     removeAgent,
@@ -117,8 +119,9 @@ export default function App() {
     agentId: string,
     command: string,
     attachments: AgentCommandAttachment[] = [],
+    delivery: DeliveryBehavior = "auto",
   ) => {
-    sendCommand(agentId, { command, attachments });
+    sendCommand(agentId, { command, attachments, delivery });
     const agentName = agents.find((agent) => agent.id === agentId)?.name ?? "agent";
     return [`> Command sent to ${agentName}`];
   };
@@ -241,6 +244,7 @@ export default function App() {
             onPauseAgent={pauseAgent}
             onRestartAgent={restartAgent}
             onStopAgent={stopAgent}
+            onAbortAgent={abortAgent}
             allAgents={agents}
             pendingApprovals={pendingApprovals[selectedAgent.id] ?? []}
             onRespondToApproval={respondToApproval}

@@ -1,0 +1,19 @@
+{
+  "name": "pi-dashboard-bridge",
+  "version": "0.1.0",
+  "description": "Attach live Pi TUI sessions to Coding Agents Dashboard",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.ts",
+  "files": ["index.ts", "README.md"],
+  "keywords": ["pi-package", "pi-extension"],
+  "pi": { "extensions": ["./index.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}

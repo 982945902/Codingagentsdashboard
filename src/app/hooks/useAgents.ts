@@ -358,6 +358,20 @@ export function useAgents(config: ApiConfig | null) {
     [socket, config],
   );
 
+  const abortAgent = useCallback(
+    (agentId: string) => {
+      setAgents((current) =>
+        current.map((agent) =>
+          agent.id === agentId
+            ? appendLogs(agent, [`[${timestamp()}] Abort requested`])
+            : agent,
+        ),
+      );
+      socket?.abortAgent(agentId);
+    },
+    [socket],
+  );
+
   const respondToApproval = useCallback(
     (agentId: string, approvalId: string, decision: ApprovalDecision) => {
       // Optimistically clear the banner; the server echoes agent.approval.resolved.
@@ -406,6 +420,7 @@ export function useAgents(config: ApiConfig | null) {
       pauseAgent,
       restartAgent,
       stopAgent,
+      abortAgent,
       respondToApproval,
       createAgent,
       removeAgent,
@@ -419,6 +434,7 @@ export function useAgents(config: ApiConfig | null) {
       pauseAgent,
       restartAgent,
       stopAgent,
+      abortAgent,
       respondToApproval,
       createAgent,
       removeAgent,

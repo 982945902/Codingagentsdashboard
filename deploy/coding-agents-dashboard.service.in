@@ -1,0 +1,16 @@
+[Unit]
+Description=Coding Agents Dashboard daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_DIR__
+ExecStart=__BUN_BIN__ server/index.ts
+Restart=always
+RestartSec=3
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+EnvironmentFile=-%h/.config/coding-agents-dashboard/env
+
+[Install]
+WantedBy=default.target

@@ -10,6 +10,7 @@ export interface AgentCommandAttachment {
 
 export interface AgentCommandRequest {
   command: string;
+  delivery?: "auto" | "steer" | "followUp";
   attachments: AgentCommandAttachment[];
 }
 
@@ -83,6 +84,7 @@ export interface AgentSocket {
   pauseAgent(agentId: string): void;
   restartAgent(agentId: string): void;
   stopAgent(agentId: string): void;
+  abortAgent(agentId: string): void;
   respondToApproval(agentId: string, approvalId: string, decision: ApprovalDecision): void;
   close(): void;
 }
@@ -157,6 +159,9 @@ export function openAgentSocket(
     },
     stopAgent(agentId) {
       send({ type: "agent.stop", agentId });
+    },
+    abortAgent(agentId) {
+      send({ type: "agent.abort", agentId });
     },
     respondToApproval(agentId, approvalId, decision) {
       send({ type: "agent.approval.response", agentId, approvalId, decision });

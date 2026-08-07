@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   agentCommandSchema,
   createAgentSchema,
+  piBridgeClientMessageSchema,
   runtimeKindSchema,
   serverSettingsSchema,
   wsClientMessageSchema,
@@ -12,6 +13,7 @@ describe("shared contracts", () => {
   it("accepts supported runtime kinds", () => {
     expect(runtimeKindSchema.parse("codex")).toBe("codex");
     expect(runtimeKindSchema.parse("claude")).toBe("claude");
+    expect(runtimeKindSchema.parse("pi")).toBe("pi");
     expect(() => runtimeKindSchema.parse("mock")).toThrow();
   });
 
@@ -89,6 +91,37 @@ describe("shared contracts", () => {
     ).toThrow();
   });
 
+  it("accepts a Pi bridge registration", () => {
+    const parsed = piBridgeClientMessageSchema.parse({
+      type: "pi.register",
+      version: 1,
+      token: "secret",
+      sessionId: "session-1",
+      hostId: "devbox",
+      name: "worker",
+      cwd: "/work/project",
+      provider: "provider",
+      model: "model",
+      thinkingLevel: "medium",
+      state: "idle",
+      capabilities: {
+        prompt: true,
+        steer: true,
+        followUp: true,
+        abort: true,
+        compact: true,
+        setModel: false,
+        setThinkingLevel: true,
+        attachments: false,
+      },
+      snapshot: { messages: [], contextPercent: 10 },
+    });
+    expect(parsed.type).toBe("pi.register");
+    if (parsed.type === "pi.register") {
+      expect(parsed.snapshot.contextPercent).toBe(10);
+    }
+  });
+
   it("normalizes server settings", () => {
     const parsed = serverSettingsSchema.parse({
       apiKey: "secret",
@@ -97,6 +130,7 @@ describe("shared contracts", () => {
     expect(parsed.host).toBe("127.0.0.1");
     expect(parsed.port).toBe(8787);
     expect(parsed.apiKey).toBe("secret");
+    expect(parsed.piBridgeToken).toBe("dev-api-key");
     expect(parsed.corsOrigins).toEqual(["*"]);
     expect(parsed.persistencePath).toBe(".data/agents.json");
   });

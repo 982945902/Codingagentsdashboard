@@ -23,6 +23,7 @@ function startTestServer(transcriber?: Transcriber) {
   const app = createApp({
     settings: {
       apiKey,
+      piBridgeToken: apiKey,
       corsOrigins: ["*"],
       host: "127.0.0.1",
       port: 0,
